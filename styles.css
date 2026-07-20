@@ -88,6 +88,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: transparent;
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   transition: .2s ease;
 }
 .nav-item span { display: grid; width: 24px; place-items: center; font-size: 18px; }
