@@ -23,7 +23,9 @@ La aplicación se entrega limpia, sin jornadas, contactos, partidas presupuestar
 - Diseño adaptable a ordenador, tableta y móvil.
 - Diseño institucional rojo y amarillo basado exclusivamente en degradados suaves.
 - Selector de tema con cinco paletas: Cámara, Océano, Bosque, Violeta y Grafito.
-- Login local con contraseña configurada en el primer acceso.
+- Login cerrado con usuarios almacenados en Cloudflare D1.
+- Sesiones seguras mediante cookie `HttpOnly`, `Secure` y `SameSite=Strict`.
+- Panel exclusivo para administradores con alta, baja, activación y cambio de contraseña de usuarios.
 
 ## Cómo abrirlo
 
@@ -37,11 +39,9 @@ python -m http.server 8080
 
 Después abre `http://localhost:8080`.
 
-## Primer acceso
+## Acceso
 
-La primera vez se solicita crear un usuario y una contraseña de al menos ocho caracteres. La contraseña no se guarda en texto plano: se conserva únicamente una clave derivada mediante PBKDF2 y una sal aleatoria. La sesión se mantiene solo durante la pestaña activa y puede cerrarse con el botón `Salir`.
-
-Este acceso protege el uso local. En una publicación multiusuario será necesario sustituirlo por autenticación de servidor, usuarios reales y control de sesiones.
+No existe registro público. El administrador inicial se crea directamente en Cloudflare D1 y, desde la sección `Usuarios`, puede generar las demás cuentas autorizadas. Las contraseñas se almacenan mediante PBKDF2 con sal aleatoria y las sesiones se gestionan en el servidor.
 
 ## Persistencia
 

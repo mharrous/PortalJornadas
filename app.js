@@ -2,8 +2,6 @@
   "use strict";
 
   const STORAGE_KEY = "portal-jornadas-data-v1";
-  const AUTH_KEY = "portal-jornadas-auth-v1";
-  const SESSION_KEY = "portal-jornadas-session-v1";
   const INVOICE_DB_NAME = "portal-jornadas-files-v1";
   const INVOICE_STORE_NAME = "invoices";
   const MAX_INVOICE_SIZE = 20 * 1024 * 1024;
@@ -13,6 +11,7 @@
     budget: "Control presupuestario",
     contacts: "Agenda de contactos",
     data: "Datos y copias de seguridad",
+    users: "Administración de usuarios",
   };
   const themes = [
     { id: "camara", name: "Cámara", description: "Rojo y amarillo", colors: ["#9c2030", "#d7aa31", "#fbf8f2"] },
@@ -38,6 +37,9 @@
   let modalDraft = null;
   let modalPendingFiles = new Map();
   let modalRemovedInvoiceIds = new Set();
+  let currentUser = null;
+  let usersCache = [];
+  let usersLoading = false;
 
   const uid = () =>
     globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -238,9 +240,11 @@
       budget: renderBudget,
       contacts: renderContacts,
       data: renderData,
+      users: renderUsers,
     };
     appView.innerHTML = renderers[currentView]();
     bindViewEvents();
+    if (currentView === "users" && currentUser?.role === "admin" && !usersCache.length && !usersLoading) loadUsers();
   }
 
   function renderDashboard() {
@@ -595,6 +599,10 @@
     document.querySelector("#exportCsv")?.addEventListener("click", exportCsv);
     document.querySelector("#importJson")?.addEventListener("change", importJson);
     document.querySelector("#resetData")?.addEventListener("click", resetData);
+    document.querySelector("[data-new-user]")?.addEventListener("click", openUserModal);
+    appView.querySelectorAll("[data-toggle-user]").forEach((button) => button.addEventListener("click", () => toggleUser(button.dataset.toggleUser, button.dataset.active === "true")));
+    appView.querySelectorAll("[data-reset-user]").forEach((button) => button.addEventListener("click", () => openPasswordModal(button.dataset.resetUser)));
+    appView.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => removeUser(button.dataset.deleteUser)));
   }
 
   function navigate(view) {
@@ -1070,26 +1078,129 @@
     render();
   }
 
-  function bytesToBase64(bytes) {
-    return btoa(String.fromCharCode(...bytes));
+  async function apiRequest(path, options = {}) {
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      ...options,
+      headers: options.body ? { "content-type": "application/json", ...(options.headers || {}) } : options.headers,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "No se pudo completar la operación");
+    return data;
   }
 
-  async function derivePasswordHash(password, saltBase64) {
-    const encoder = new TextEncoder();
-    const passwordKey = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(password),
-      "PBKDF2",
-      false,
-      ["deriveBits"],
-    );
-    const salt = Uint8Array.from(atob(saltBase64), (character) => character.charCodeAt(0));
-    const bits = await crypto.subtle.deriveBits(
-      { name: "PBKDF2", hash: "SHA-256", salt, iterations: 120000 },
-      passwordKey,
-      256,
-    );
-    return bytesToBase64(new Uint8Array(bits));
+  function renderUsers() {
+    if (currentUser?.role !== "admin") return `<div class="empty-state"><strong>Acceso restringido</strong><p>Solo los administradores pueden gestionar usuarios.</p></div>`;
+    return `
+      <div class="section-toolbar">
+        <div><p class="eyebrow">Acceso cerrado</p><h2>Usuarios autorizados</h2><p class="section-copy">Solo un administrador puede crear nuevas cuentas.</p></div>
+        <button class="primary-button" data-new-user>+ Nuevo usuario</button>
+      </div>
+      <div class="table-card users-card">
+        <table class="data-table users-table">
+          <thead><tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead>
+          <tbody>
+            ${usersCache.length ? usersCache.map((user) => `
+              <tr>
+                <td><strong>${escapeHtml(user.username)}</strong>${user.id === currentUser.id ? `<small class="current-user-label">Tu cuenta</small>` : ""}</td>
+                <td>${escapeHtml(user.display_name)}</td>
+                <td><span class="status-badge ${user.role === "admin" ? "warning" : "info"}">${user.role === "admin" ? "Administrador" : "Usuario"}</span></td>
+                <td><span class="status-badge ${user.active ? "success" : "neutral"}">${user.active ? "Activo" : "Desactivado"}</span></td>
+                <td>${user.last_login_at ? new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date(user.last_login_at)) : "Nunca"}</td>
+                <td><div class="user-actions">
+                  <button class="secondary-button compact-button" data-reset-user="${user.id}">Contraseña</button>
+                  ${user.id !== currentUser.id ? `<button class="secondary-button compact-button" data-toggle-user="${user.id}" data-active="${Boolean(user.active)}">${user.active ? "Desactivar" : "Activar"}</button><button class="danger-text-button" data-delete-user="${user.id}">Eliminar</button>` : ""}
+                </div></td>
+              </tr>`).join("") : `<tr><td colspan="6"><div class="empty-state"><strong>Cargando usuarios…</strong></div></td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  async function loadUsers() {
+    if (usersLoading) return;
+    usersLoading = true;
+    try {
+      const data = await apiRequest("/api/users");
+      usersCache = data.users || [];
+      if (currentView === "users") render();
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      usersLoading = false;
+    }
+  }
+
+  function openUserModal() {
+    openModal("Nuevo usuario", "Administración", `
+      <form id="userForm" class="form-stack">
+        <div class="form-grid">
+          <label class="field"><span>Usuario</span><input name="username" minlength="3" maxlength="50" pattern="[A-Za-z0-9._-]+" autocomplete="off" required /></label>
+          <label class="field"><span>Nombre visible</span><input name="displayName" minlength="2" maxlength="80" required /></label>
+          <label class="field"><span>Rol</span><select name="role"><option value="user">Usuario</option><option value="admin">Administrador</option></select></label>
+          <label class="field"><span>Contraseña inicial</span><input name="password" type="password" minlength="10" autocomplete="new-password" required /></label>
+        </div>
+        <p class="form-help">Entrega la contraseña al usuario por un canal seguro. No se mostrará de nuevo.</p>
+        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Crear usuario</button></footer>
+      </form>`);
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#userForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      try {
+        await apiRequest("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(formData)) });
+        closeModal();
+        showToast("Usuario creado");
+        await loadUsers();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+
+  function openPasswordModal(userId) {
+    const user = usersCache.find((item) => item.id === userId);
+    if (!user) return;
+    openModal("Cambiar contraseña", "Administración", `
+      <form id="passwordForm" class="form-stack">
+        <p>Vas a establecer una nueva contraseña para <strong>${escapeHtml(user.display_name)}</strong>. Sus sesiones abiertas se cerrarán.</p>
+        <label class="field"><span>Nueva contraseña</span><input name="password" type="password" minlength="10" autocomplete="new-password" required autofocus /></label>
+        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar contraseña</button></footer>
+      </form>`);
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#passwordForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const password = String(new FormData(event.currentTarget).get("password") || "");
+      try {
+        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ password }) });
+        closeModal();
+        showToast("Contraseña actualizada");
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+
+  async function toggleUser(userId, active) {
+    try {
+      await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ active: !active }) });
+      showToast(active ? "Usuario desactivado" : "Usuario activado");
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  async function removeUser(userId) {
+    const user = usersCache.find((item) => item.id === userId);
+    if (!user || !window.confirm(`¿Eliminar definitivamente a ${user.display_name}?`)) return;
+    try {
+      await apiRequest(`/api/users/${userId}`, { method: "DELETE" });
+      showToast("Usuario eliminado");
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message);
+    }
   }
 
   function authMessage(message, type = "error") {
@@ -1100,33 +1211,14 @@
   }
 
   function renderAuth() {
-    const auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-    if (!auth) {
-      authContent.innerHTML = `
-        <div class="auth-intro">
-          <span class="auth-kicker">Primera configuración</span>
-          <h2>Crea el acceso a la aplicación</h2>
-          <p>La contraseña se transforma en una clave cifrada y no se guarda ni aparece en el código.</p>
-        </div>
-        <form class="auth-form" id="setupForm">
-          <label class="field"><span>Usuario</span><input name="username" value="Administrador OAP" autocomplete="username" required /></label>
-          <label class="field"><span>Contraseña</span><input name="password" type="password" minlength="8" autocomplete="new-password" required /></label>
-          <label class="field"><span>Repetir contraseña</span><input name="confirmPassword" type="password" minlength="8" autocomplete="new-password" required /></label>
-          <p class="auth-message" id="authMessage"></p>
-          <button class="primary-button auth-submit" type="submit">Crear acceso y entrar</button>
-        </form>`;
-      document.querySelector("#setupForm").addEventListener("submit", setupAccess);
-      return;
-    }
-
     authContent.innerHTML = `
       <div class="auth-intro">
         <span class="auth-kicker">Acceso restringido</span>
-        <h2>Bienvenido de nuevo</h2>
-        <p>Introduce la contraseña configurada para entrar en la gestión OAP.</p>
+        <h2>Acceso autorizado</h2>
+        <p>Introduce las credenciales proporcionadas por el administrador.</p>
       </div>
       <form class="auth-form" id="loginForm">
-        <label class="field"><span>Usuario</span><input value="${escapeHtml(auth.username)}" autocomplete="username" readonly /></label>
+        <label class="field"><span>Usuario</span><input name="username" autocomplete="username" required autofocus /></label>
         <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="current-password" required autofocus /></label>
         <p class="auth-message" id="authMessage"></p>
         <button class="primary-button auth-submit" type="submit">Entrar</button>
@@ -1134,50 +1226,35 @@
     document.querySelector("#loginForm").addEventListener("submit", login);
   }
 
-  async function setupAccess(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const username = String(formData.get("username") || "Administrador OAP").trim();
-    const password = String(formData.get("password") || "");
-    const confirmPassword = String(formData.get("confirmPassword") || "");
-    if (password.length < 8) return authMessage("Usa al menos 8 caracteres.");
-    if (password !== confirmPassword) return authMessage("Las contraseñas no coinciden.");
-    try {
-      authMessage("Creando acceso…", "info");
-      const salt = crypto.getRandomValues(new Uint8Array(16));
-      const saltBase64 = bytesToBase64(salt);
-      const hash = await derivePasswordHash(password, saltBase64);
-      localStorage.setItem(AUTH_KEY, JSON.stringify({ username, salt: saltBase64, hash, createdAt: new Date().toISOString() }));
-      sessionStorage.setItem(SESSION_KEY, "active");
-      unlockApp();
-    } catch (error) {
-      authMessage("No se pudo crear el acceso en este navegador.");
-    }
-  }
-
   async function login(event) {
     event.preventDefault();
-    const auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-    const password = String(new FormData(event.currentTarget).get("password") || "");
+    const formData = new FormData(event.currentTarget);
     try {
       authMessage("Comprobando…", "info");
-      const hash = await derivePasswordHash(password, auth.salt);
-      if (hash !== auth.hash) return authMessage("Contraseña incorrecta.");
-      sessionStorage.setItem(SESSION_KEY, "active");
-      unlockApp();
+      const data = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username: formData.get("username"), password: formData.get("password") }),
+      });
+      unlockApp(data.user);
     } catch (error) {
-      authMessage("No se pudo validar el acceso.");
+      authMessage(error.message);
     }
   }
 
-  function unlockApp() {
+  function unlockApp(user) {
+    currentUser = user;
+    document.querySelector("#currentUserBadge").textContent = `${user.displayName} · ${user.role === "admin" ? "Admin" : "Usuario"}`;
+    document.querySelector("#usersNav").hidden = user.role !== "admin";
     authGate.hidden = true;
     appShell.hidden = false;
     render();
   }
 
-  function logout() {
-    sessionStorage.removeItem(SESSION_KEY);
+  async function logout() {
+    await apiRequest("/api/auth/logout", { method: "POST" }).catch(() => null);
+    currentUser = null;
+    usersCache = [];
+    currentView = "dashboard";
     appShell.hidden = true;
     authGate.hidden = false;
     renderAuth();
@@ -1223,11 +1300,14 @@
     });
   }
 
-  function initAuth() {
+  async function initAuth() {
     applyTheme(state.settings.theme);
-    const auth = localStorage.getItem(AUTH_KEY);
-    if (auth && sessionStorage.getItem(SESSION_KEY) === "active") unlockApp();
-    else renderAuth();
+    try {
+      const data = await apiRequest("/api/auth/session");
+      unlockApp(data.user);
+    } catch (error) {
+      renderAuth();
+    }
   }
 
   document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));

@@ -49,6 +49,9 @@
           <button class="nav-item" data-view="data">
             <span aria-hidden="true">⇅</span> Datos y copias
           </button>
+          <button class="nav-item" data-view="users" id="usersNav" hidden>
+            <span aria-hidden="true">♙</span> Usuarios
+          </button>
         </nav>
 
         <div class="sidebar-note">
@@ -68,7 +71,7 @@
             <h1 id="viewTitle">Resumen anual</h1>
           </div>
           <div class="topbar-actions">
-            <span class="local-badge">Guardado local</span>
+            <span class="local-badge" id="currentUserBadge">Sesión segura</span>
             <button class="secondary-button theme-button" id="themeButton">◐ Tema</button>
             <button class="secondary-button logout-button" id="logoutButton">Salir</button>
             <button class="primary-button" id="quickAddEvent">+ Nueva jornada</button>

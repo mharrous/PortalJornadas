@@ -377,6 +377,19 @@ tbody tr:hover { background: linear-gradient(90deg, #fff8e8, #ffecc1); }
 .auth-submit { width: 100%; margin-top: 4px; }
 .auth-message { min-height: 18px; margin: 0; color: #a61f2e; font-size: 12px; font-weight: 700; }
 .auth-message.info { color: #865519; }
+
+.section-copy { margin: 6px 0 0; color: var(--muted); }
+.users-card { overflow-x: auto; }
+.users-table { min-width: 850px; }
+.users-table td { vertical-align: middle; }
+.users-table td:first-child strong,
+.current-user-label { display: block; }
+.current-user-label { margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.user-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.compact-button { min-height: 32px; padding: 7px 10px; font-size: 11px; }
+.danger-text-button { border: 0; background: none; color: #a61f2e; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.danger-text-button:hover { text-decoration: underline; }
+.form-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .logout-button { min-height: 38px; padding: 8px 12px; }
 
 @media (max-width: 1100px) {
