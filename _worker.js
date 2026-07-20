@@ -1,6 +1,6 @@
 const SESSION_COOKIE = "portal_jornadas_session";
 const SESSION_HOURS = 12;
-const PASSWORD_ITERATIONS = 210000;
+const PASSWORD_ITERATIONS = 100000;
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
