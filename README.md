@@ -1,5 +1,7 @@
 # OAP AceleraPyme
 
+El acceso desde `portal.camaraceuta.workers.dev` utiliza un código de un solo uso vinculado a `gestion-jornadas`. La aplicación crea su propia sesión y vuelve a comprobar en la D1 central que el usuario continúa activo y autorizado. La entrada directa sin sesión mantiene el login de Jornadas.
+
 Aplicación web independiente para gestionar las jornadas de la Oficina Acelera Pyme. El proyecto no modifica ni sincroniza el Excel original.
 
 El acceso es cerrado: únicamente un administrador puede crear usuarios y asignarles los módulos disponibles.

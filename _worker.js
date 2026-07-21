@@ -2,7 +2,7 @@ const SESSION_COOKIE = "portal_jornadas_session";
 const SESSION_HOURS = 12;
 const PASSWORD_ITERATIONS = 100000;
 const OIDC_STATE_MINUTES = 10;
-const CURRENT_APP_CODE = "portal-jornadas";
+const CURRENT_APP_CODE = "gestion-jornadas";
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -205,7 +205,24 @@ async function currentSession(request, env) {
   )
     .bind(tokenHash, new Date().toISOString())
     .first();
-  return session || null;
+  if (!session) return null;
+  if (String(session.external_session_id || "").startsWith("portal:")) {
+    if (!env.PORTAL_AUTH_DB) return null;
+    const centralUserId = Number(String(session.external_session_id).slice("portal:".length));
+    const allowed = await env.PORTAL_AUTH_DB.prepare(`
+      SELECT u.id
+      FROM users u
+      LEFT JOIN user_application_permissions p
+        ON p.user_id = u.id AND p.application_code = ?
+      WHERE u.id = ? AND u.active = 1
+        AND (u.role = 'admin' OR p.active = 1)
+    `).bind(CURRENT_APP_CODE, centralUserId).first();
+    if (!allowed) {
+      await env.AUTH_DB.prepare("DELETE FROM sessions WHERE id = ?").bind(session.session_id).run();
+      return null;
+    }
+  }
+  return session;
 }
 
 function publicUser(user) {
@@ -348,6 +365,50 @@ async function microsoftFrontChannelLogout(request, env) {
     await env.AUTH_DB.prepare("DELETE FROM sessions WHERE external_session_id = ?").bind(sid).run();
   }
   return new Response(null, { status: 200, headers: { "set-cookie": sessionCookie("", 0), "cache-control": "no-store" } });
+}
+
+async function portalLogin(request, env) {
+  if (!env.PORTAL_AUTH_DB) return json({ error: "El acceso desde el portal no está configurado" }, 503);
+  const code = String(new URL(request.url).searchParams.get("code") || "");
+  if (!code) return json({ error: "Código de acceso no válido" }, 400);
+  const loginCode = await env.PORTAL_AUTH_DB.prepare(`
+    DELETE FROM login_codes
+    WHERE code_hash = ? AND application_code = ? AND expires_at > CURRENT_TIMESTAMP
+    RETURNING user_id
+  `).bind(await sha256Base64Url(code), CURRENT_APP_CODE).first();
+  if (!loginCode) return json({ error: "El acceso ha caducado o ya fue utilizado" }, 403);
+  const centralUser = await env.PORTAL_AUTH_DB.prepare(`
+    SELECT u.id, u.display_name, u.email, u.role, u.entra_oid, u.entra_tenant_id, p.role AS application_role
+    FROM users u
+    LEFT JOIN user_application_permissions p ON p.user_id = u.id AND p.application_code = ?
+    WHERE u.id = ? AND u.active = 1 AND (u.role = 'admin' OR p.active = 1)
+  `).bind(CURRENT_APP_CODE, loginCode.user_id).first();
+  if (!centralUser?.email) return json({ error: "Usuario sin correo corporativo autorizado" }, 403);
+
+  let localUser = await env.AUTH_DB.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").bind(centralUser.email).first();
+  if (!localUser) {
+    const salt = toBase64(crypto.getRandomValues(new Uint8Array(16)));
+    const password = randomToken(32);
+    const userId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const role = centralUser.role === "admin" || centralUser.application_role === "admin" ? "admin" : "user";
+    await env.AUTH_DB.prepare(`
+      INSERT INTO users (id, username, display_name, role, modules, email, entra_oid, entra_tenant_id, auth_provider, password_hash, password_salt, active, created_at)
+      VALUES (?, ?, ?, ?, 'jornadas', ?, ?, ?, 'entra', ?, ?, 1, ?)
+    `).bind(userId, `portal_${centralUser.id}`, centralUser.display_name || centralUser.email, role, centralUser.email, centralUser.entra_oid, centralUser.entra_tenant_id, await passwordHash(password, salt), salt, now).run();
+    localUser = await env.AUTH_DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first();
+  }
+  if (!localUser.active) return json({ error: "Usuario desactivado en Jornadas" }, 403);
+  if (localUser.role !== "admin" && !parseModules(localUser.modules).includes("jornadas")) {
+    const modules = [...parseModules(localUser.modules), "jornadas"].join(",");
+    await env.AUTH_DB.prepare("UPDATE users SET modules = ? WHERE id = ?").bind(modules, localUser.id).run();
+    localUser.modules = modules;
+  }
+  const token = await createSession(request, env, localUser.id, `portal:${centralUser.id}`);
+  return redirect(new URL("/", request.url).toString(), {
+    "set-cookie": sessionCookie(token, SESSION_HOURS * 60 * 60),
+    "referrer-policy": "no-referrer",
+  });
 }
 
 async function login(request, env) {
@@ -655,6 +716,7 @@ async function deletePodcastSchedule(request, env, scheduleId) {
 async function handleApi(request, env) {
   if (!env.AUTH_DB) return json({ error: "La base de datos de acceso no está configurada" }, 503);
   const url = new URL(request.url);
+  if (url.pathname === "/api/auth/portal" && request.method === "GET") return portalLogin(request, env);
   if (url.pathname === "/api/auth/microsoft/callback" && request.method === "POST") return microsoftCallback(request, env);
   if (["POST", "PATCH", "DELETE"].includes(request.method) && !assertSameOrigin(request)) return json({ error: "Origen no permitido" }, 403);
   if (url.pathname === "/api/auth/config" && request.method === "GET") {
