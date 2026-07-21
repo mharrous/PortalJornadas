@@ -3,6 +3,8 @@ const SESSION_HOURS = 180 * 24;
 const PASSWORD_ITERATIONS = 100000;
 const OIDC_STATE_MINUTES = 10;
 const CURRENT_APP_CODE = "gestion-jornadas";
+const PORTAL_LAUNCH_URL = "https://portal.camaraceuta.workers.dev/api/apps/gestion-jornadas/launch";
+const PORTAL_LOGOUT_URL = "https://portal.camaraceuta.workers.dev/logout";
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -206,6 +208,10 @@ async function currentSession(request, env) {
     .bind(tokenHash, new Date().toISOString())
     .first();
   if (!session) return null;
+  if (!String(session.external_session_id || "").startsWith("portal:")) {
+    await env.AUTH_DB.prepare("DELETE FROM sessions WHERE id = ?").bind(session.session_id).run();
+    return null;
+  }
   if (String(session.external_session_id || "").startsWith("portal:")) {
     if (!env.PORTAL_AUTH_DB) return null;
     const centralUserId = Number(String(session.external_session_id).slice("portal:".length));
@@ -438,14 +444,7 @@ async function logout(request, env) {
   const session = await currentSession(request, env);
   const token = parseCookies(request)[SESSION_COOKIE];
   if (token) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
-  const config = entraConfig(env);
-  let logoutUrl = "";
-  if (session?.auth_provider === "entra" && config.enabled) {
-    const endpoint = new URL(`${config.authorityRoot}/oauth2/v2.0/logout`);
-    endpoint.searchParams.set("post_logout_redirect_uri", sameOriginUrl(config.postLogoutRedirectUri, request));
-    logoutUrl = endpoint.toString();
-  }
-  return json({ ok: true, logoutUrl }, 200, { "set-cookie": sessionCookie("", 0) });
+  return json({ ok: true, logoutUrl: PORTAL_LOGOUT_URL }, 200, { "set-cookie": sessionCookie("", 0) });
 }
 
 async function listUsers(request, env) {
@@ -521,6 +520,9 @@ async function updateUser(request, env, userId) {
   const access = await requireUser(request, env, "admin");
   if (access.error) return access.error;
   const body = await requestBody(request);
+  if (Object.keys(body).some((key) => key !== "accessProfile")) {
+    return json({ error: "La identidad se gestiona desde el portal central" }, 400);
+  }
   const target = await env.AUTH_DB.prepare("SELECT id, username, display_name, email, role, modules, active, entra_oid FROM users WHERE id = ?").bind(userId).first();
   if (!target) return json({ error: "Usuario no encontrado" }, 404);
   if (userId === access.session.id && (body.active === false || (body.accessProfile && body.accessProfile !== "admin") || (body.role && body.role !== "admin"))) {
@@ -717,22 +719,17 @@ async function handleApi(request, env) {
   if (!env.AUTH_DB) return json({ error: "La base de datos de acceso no está configurada" }, 503);
   const url = new URL(request.url);
   if (url.pathname === "/api/auth/portal" && request.method === "GET") return portalLogin(request, env);
-  if (url.pathname === "/api/auth/microsoft/callback" && request.method === "POST") return microsoftCallback(request, env);
   if (["POST", "PATCH", "DELETE"].includes(request.method) && !assertSameOrigin(request)) return json({ error: "Origen no permitido" }, 403);
   if (url.pathname === "/api/auth/config" && request.method === "GET") {
-    const config = entraConfig(env);
-    return json({ microsoftEnabled: config.enabled, localAdminLoginEnabled: config.localAdminLoginEnabled });
+    return json({ microsoftEnabled: true, localAdminLoginEnabled: false, portalLaunchUrl: PORTAL_LAUNCH_URL });
   }
-  if (url.pathname === "/api/auth/microsoft/start" && request.method === "GET") return microsoftStart(request, env);
-  if (url.pathname === "/api/auth/microsoft/front-channel-logout" && request.method === "GET") return microsoftFrontChannelLogout(request, env);
-  if (url.pathname === "/api/auth/login" && request.method === "POST") return login(request, env);
+  if (url.pathname === "/api/auth/microsoft/start" && request.method === "GET") return redirect(PORTAL_LAUNCH_URL);
   if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout(request, env);
   if (url.pathname === "/api/auth/session" && request.method === "GET") {
     const access = await requireUser(request, env);
     return access.error || json({ user: publicUser(access.session) });
   }
   if (url.pathname === "/api/users" && request.method === "GET") return listUsers(request, env);
-  if (url.pathname === "/api/users" && request.method === "POST") return createUser(request, env);
   if (url.pathname === "/api/podcast" && request.method === "GET") return getPodcast(request, env);
   if (url.pathname === "/api/podcast/episodes" && request.method === "POST") return createPodcastEpisode(request, env);
   if (url.pathname === "/api/podcast/schedule" && request.method === "POST") return createPodcastSchedule(request, env);
@@ -744,7 +741,6 @@ async function handleApi(request, env) {
   if (podcastScheduleMatch && request.method === "DELETE") return deletePodcastSchedule(request, env, podcastScheduleMatch[1]);
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && request.method === "PATCH") return updateUser(request, env, userMatch[1]);
-  if (userMatch && request.method === "DELETE") return deleteUser(request, env, userMatch[1]);
   return json({ error: "Ruta no encontrada" }, 404);
 }
 

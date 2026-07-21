@@ -828,17 +828,12 @@
     document.querySelector("#exportCsv")?.addEventListener("click", exportCsv);
     document.querySelector("#importJson")?.addEventListener("change", importJson);
     document.querySelector("#resetData")?.addEventListener("click", resetData);
-    document.querySelector("[data-new-user]")?.addEventListener("click", openUserModal);
     document.querySelector("[data-new-podcast-episode]")?.addEventListener("click", () => openPodcastEpisodeModal());
     document.querySelector("[data-new-podcast-schedule]")?.addEventListener("click", () => openPodcastScheduleModal());
     appView.querySelectorAll("[data-podcast-tab]").forEach((button) => button.addEventListener("click", () => { podcastSection = button.dataset.podcastTab; render(); }));
     appView.querySelectorAll("[data-edit-podcast-episode]").forEach((button) => button.addEventListener("click", () => openPodcastEpisodeModal(button.dataset.editPodcastEpisode)));
     appView.querySelectorAll("[data-edit-podcast-schedule]").forEach((button) => button.addEventListener("click", () => openPodcastScheduleModal(button.dataset.editPodcastSchedule)));
-    appView.querySelectorAll("[data-toggle-user]").forEach((button) => button.addEventListener("click", () => toggleUser(button.dataset.toggleUser, button.dataset.active === "true")));
-    appView.querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => openUserEditModal(button.dataset.editUser)));
-    appView.querySelectorAll("[data-reset-user]").forEach((button) => button.addEventListener("click", () => openPasswordModal(button.dataset.resetUser)));
     appView.querySelectorAll("[data-access-user]").forEach((button) => button.addEventListener("click", () => openUserAccessModal(button.dataset.accessUser)));
-    appView.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => removeUser(button.dataset.deleteUser)));
   }
 
   function navigate(view) {
@@ -1489,28 +1484,20 @@
     if (currentUser?.role !== "admin") return `<div class="empty-state"><strong>Acceso restringido</strong><p>Solo los administradores pueden gestionar usuarios.</p></div>`;
     return `
       <div class="section-toolbar">
-        <div><p class="eyebrow">Acceso cerrado</p><h2>Usuarios autorizados</h2><p class="section-copy">Solo un administrador puede crear nuevas cuentas.</p></div>
-        <button class="primary-button" data-new-user>+ Nuevo usuario</button>
+        <div><p class="eyebrow">Microsoft Entra</p><h2>Perfiles sincronizados</h2><p class="section-copy">Los usuarios y correos se gestionan desde el portal central. Aquí solo se define qué módulos de esta aplicación puede utilizar cada persona.</p></div>
       </div>
       <div class="table-card users-card">
         <table class="data-table users-table">
-          <thead><tr><th>Usuario</th><th>Nombre y correo</th><th>Identidad</th><th>Perfil de acceso</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead>
+          <thead><tr><th>Nombre</th><th>Cuenta Microsoft</th><th>Perfil interno</th><th>Último acceso</th><th>Acción</th></tr></thead>
           <tbody>
             ${usersCache.length ? usersCache.map((user) => `
               <tr>
-                <td><strong>${escapeHtml(user.username)}</strong>${user.id === currentUser.id ? `<small class="current-user-label">Tu cuenta</small>` : ""}</td>
-                <td><strong>${escapeHtml(user.display_name)}</strong><small>${escapeHtml(user.email || "Sin correo Microsoft")}</small></td>
-                <td><span class="status-badge ${user.entra_oid ? "success" : "neutral"}">${user.entra_oid ? "Microsoft vinculado" : "Pendiente"}</span></td>
+                <td><strong>${escapeHtml(user.display_name)}</strong>${user.id === currentUser.id ? `<small class="current-user-label">Tu cuenta</small>` : ""}</td>
+                <td><strong>${escapeHtml(user.email || "Sincronización pendiente")}</strong><small>Gestionado desde el portal central</small></td>
                 <td><span class="status-badge ${user.role === "admin" ? "warning" : "info"}">${userAccessLabel(user)}</span></td>
-                <td><span class="status-badge ${user.active ? "success" : "neutral"}">${user.active ? "Activo" : "Desactivado"}</span></td>
                 <td>${user.last_login_at ? new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date(user.last_login_at)) : "Nunca"}</td>
-                <td><div class="user-actions">
-                  <button class="secondary-button compact-button" data-edit-user="${user.id}">Editar</button>
-                  <button class="secondary-button compact-button" data-access-user="${user.id}">Permisos</button>
-                  <button class="secondary-button compact-button" data-reset-user="${user.id}">Contraseña</button>
-                  ${user.id !== currentUser.id ? `<button class="secondary-button compact-button" data-toggle-user="${user.id}" data-active="${Boolean(user.active)}">${user.active ? "Desactivar" : "Activar"}</button><button class="danger-text-button" data-delete-user="${user.id}">Eliminar</button>` : ""}
-                </div></td>
-              </tr>`).join("") : `<tr><td colspan="7"><div class="empty-state"><strong>Cargando usuarios…</strong></div></td></tr>`}
+                <td><button class="secondary-button compact-button" data-access-user="${user.id}">Cambiar módulos</button></td>
+              </tr>`).join("") : `<tr><td colspan="5"><div class="empty-state"><strong>Aún no hay perfiles sincronizados.</strong></div></td></tr>`}
           </tbody>
         </table>
       </div>`;
@@ -1530,34 +1517,6 @@
     }
   }
 
-  function openUserModal() {
-    openModal("Nuevo usuario", "Administración", `
-      <form id="userForm" class="form-stack">
-        <div class="form-grid">
-          <label class="field"><span>Usuario</span><input name="username" minlength="3" maxlength="50" pattern="[A-Za-z0-9._-]+" autocomplete="off" required /></label>
-          <label class="field"><span>Nombre visible</span><input name="displayName" minlength="2" maxlength="80" required /></label>
-          <label class="field span-2"><span>Correo corporativo Microsoft</span><input name="email" type="email" autocomplete="off" placeholder="usuario@camaradeceuta.es" /></label>
-          <label class="field"><span>Perfil de acceso</span><select name="accessProfile"><option value="jornadas">Solo Jornadas</option><option value="podcast">Solo Podcast</option><option value="both">Jornadas + Podcast</option><option value="admin">Administrador</option></select></label>
-          <label class="field"><span>Contraseña inicial</span><input name="password" type="password" minlength="10" autocomplete="new-password" required /></label>
-        </div>
-        <p class="form-help">El correo permite vincular Microsoft en el primer acceso. La contraseña queda como recuperación local mientras el SSO no esté activado.</p>
-        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Crear usuario</button></footer>
-      </form>`);
-    document.querySelector("#cancelModal").addEventListener("click", closeModal);
-    document.querySelector("#userForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const formData = new FormData(event.currentTarget);
-      try {
-        await apiRequest("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(formData)) });
-        closeModal();
-        showToast("Usuario creado");
-        await loadUsers();
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-  }
-
   function openUserAccessModal(userId) {
     const user = usersCache.find((item) => item.id === userId);
     if (!user) return;
@@ -1573,18 +1532,16 @@
             ["admin", "Administrador · acceso total"],
           ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("")}
         </select></label>
-        <label class="field"><span>Correo corporativo Microsoft</span><input name="email" type="email" value="${escapeHtml(user.email || "")}" placeholder="usuario@camaradeceuta.es" /></label>
-        <p class="form-help">El correo debe coincidir exactamente con la cuenta corporativa. Los permisos siguen controlándose desde esta aplicación.</p>
-        <footer class="modal-actions">${user.entra_oid ? '<button class="danger-text-button" type="button" id="resetEntraLink">Desvincular Microsoft</button>' : "<span></span>"}<div><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar permisos</button></div></footer>
+        <p class="form-help">El nombre, correo y acceso general se administran desde el portal central.</p>
+        <footer class="modal-actions"><span></span><div><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar módulos</button></div></footer>
       </form>`);
     document.querySelector("#cancelModal").addEventListener("click", closeModal);
     document.querySelector("#userAccessForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(event.currentTarget);
       const accessProfile = String(formData.get("accessProfile") || "jornadas");
-      const email = String(formData.get("email") || "");
       try {
-        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ accessProfile, email }) });
+        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ accessProfile }) });
         closeModal();
         showToast("Permisos actualizados");
         await loadUsers();
@@ -1592,132 +1549,21 @@
         showToast(error.message);
       }
     });
-    document.querySelector("#resetEntraLink")?.addEventListener("click", async () => {
-      if (!window.confirm("¿Desvincular esta cuenta de Microsoft? Sus sesiones abiertas se cerrarán.")) return;
-      try {
-        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ resetEntraLink: true }) });
-        closeModal();
-        showToast("Cuenta de Microsoft desvinculada");
-        await loadUsers();
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-  }
-
-  function openUserEditModal(userId) {
-    const user = usersCache.find((item) => item.id === userId);
-    if (!user) return;
-    openModal("Editar usuario", "Administración", `
-      <form id="userEditForm" class="form-stack">
-        <div class="form-grid">
-          <label class="field"><span>Usuario</span><input name="username" value="${escapeHtml(user.username)}" minlength="3" maxlength="50" pattern="[A-Za-z0-9._-]+" autocomplete="off" required /></label>
-          <label class="field"><span>Nombre visible</span><input name="displayName" value="${escapeHtml(user.display_name)}" minlength="2" maxlength="80" required /></label>
-          <label class="field span-2"><span>Correo corporativo Microsoft</span><input name="email" type="email" value="${escapeHtml(user.email || "")}" autocomplete="off" placeholder="usuario@camaradeceuta.es" /></label>
-        </div>
-        <p class="form-help">El correo se guarda en la base de datos y se utilizará para vincular la cuenta de Microsoft en el primer acceso.</p>
-        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar usuario</button></footer>
-      </form>`);
-    document.querySelector("#cancelModal").addEventListener("click", closeModal);
-    document.querySelector("#userEditForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const formData = new FormData(event.currentTarget);
-      try {
-        await apiRequest(`/api/users/${userId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            username: String(formData.get("username") || ""),
-            displayName: String(formData.get("displayName") || ""),
-            email: String(formData.get("email") || ""),
-          }),
-        });
-        closeModal();
-        showToast("Usuario actualizado");
-        await loadUsers();
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-  }
-
-  function openPasswordModal(userId) {
-    const user = usersCache.find((item) => item.id === userId);
-    if (!user) return;
-    openModal("Cambiar contraseña", "Administración", `
-      <form id="passwordForm" class="form-stack">
-        <p>Vas a establecer una nueva contraseña para <strong>${escapeHtml(user.display_name)}</strong>. Sus sesiones abiertas se cerrarán.</p>
-        <label class="field"><span>Nueva contraseña</span><input name="password" type="password" minlength="10" autocomplete="new-password" required autofocus /></label>
-        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar contraseña</button></footer>
-      </form>`);
-    document.querySelector("#cancelModal").addEventListener("click", closeModal);
-    document.querySelector("#passwordForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const password = String(new FormData(event.currentTarget).get("password") || "");
-      try {
-        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ password }) });
-        closeModal();
-        showToast("Contraseña actualizada");
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-  }
-
-  async function toggleUser(userId, active) {
-    try {
-      await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ active: !active }) });
-      showToast(active ? "Usuario desactivado" : "Usuario activado");
-      await loadUsers();
-    } catch (error) {
-      showToast(error.message);
-    }
-  }
-
-  async function removeUser(userId) {
-    const user = usersCache.find((item) => item.id === userId);
-    if (!user || !window.confirm(`¿Eliminar definitivamente a ${user.display_name}?`)) return;
-    try {
-      await apiRequest(`/api/users/${userId}`, { method: "DELETE" });
-      showToast("Usuario eliminado");
-      await loadUsers();
-    } catch (error) {
-      showToast(error.message);
-    }
-  }
-
-  function authMessage(message, type = "error") {
-    const element = document.querySelector("#authMessage");
-    if (!element) return;
-    element.textContent = message;
-    element.className = `auth-message ${type}`;
   }
 
   function microsoftLogin() {
-    window.location.assign("/api/auth/microsoft/start?returnTo=%2F");
+    window.location.assign(authConfiguration.portalLaunchUrl || "https://portal.camaraceuta.workers.dev/api/apps/gestion-jornadas/launch");
   }
 
-  function renderAuth(options = {}) {
-    const showLocalForm = !authConfiguration.microsoftEnabled || authConfiguration.localAdminLoginEnabled;
-    const microsoftButton = authConfiguration.microsoftEnabled
-      ? `<button class="microsoft-button" type="button" id="microsoftLogin"><span aria-hidden="true">▦</span> Entrar con Microsoft</button>${showLocalForm ? '<div class="auth-divider"><span>Acceso administrativo local</span></div>' : ""}`
-      : "";
-    const localForm = showLocalForm ? `
-      <form class="auth-form" id="loginForm">
-        <label class="field"><span>Usuario</span><input name="username" autocomplete="username" required autofocus /></label>
-        <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="current-password" required /></label>
-        <p class="auth-message" id="authMessage"></p>
-        <button class="primary-button auth-submit" type="submit">Entrar</button>
-      </form>` : "";
+  function renderAuth() {
     authContent.innerHTML = `
       <div class="auth-intro">
         <span class="auth-kicker">Acceso restringido</span>
         <h2>Acceso autorizado</h2>
-        <p>${options.signedOut ? "La sesión se ha cerrado correctamente." : authConfiguration.microsoftEnabled ? "Utiliza tu cuenta corporativa de Microsoft." : "Introduce las credenciales proporcionadas por el administrador."}</p>
+        <p>Utiliza tu cuenta corporativa de Microsoft.</p>
       </div>
-      ${microsoftButton}
-      ${localForm}`;
+      <button class="microsoft-button" type="button" id="microsoftLogin"><span aria-hidden="true">▦</span> Entrar con Microsoft</button>`;
     document.querySelector("#microsoftLogin")?.addEventListener("click", microsoftLogin);
-    document.querySelector("#loginForm")?.addEventListener("submit", login);
   }
 
   function renderAuthError(code) {
@@ -1736,28 +1582,12 @@
         <h2>${escapeHtml(title)}</h2>
         <p>${escapeHtml(message)}</p>
       </div>
-      ${authConfiguration.microsoftEnabled ? '<button class="microsoft-button" type="button" id="microsoftLogin"><span aria-hidden="true">▦</span> Volver a Microsoft</button>' : ""}
-      ${authConfiguration.localAdminLoginEnabled ? '<a class="admin-recovery-link" href="/?local_admin=1">Acceso de recuperación para administradores</a>' : ""}`;
+      <button class="microsoft-button" type="button" id="microsoftLogin"><span aria-hidden="true">▦</span> Volver a Microsoft</button>`;
     document.querySelector("#microsoftLogin")?.addEventListener("click", microsoftLogin);
   }
 
   function renderAuthRedirect() {
     authContent.innerHTML = '<div class="auth-intro auth-loading"><span class="auth-kicker">Inicio de sesión único</span><h2>Conectando con Microsoft…</h2><p>Estamos comprobando tu sesión corporativa de forma segura.</p><span class="auth-spinner" aria-hidden="true"></span></div>';
-  }
-
-  async function login(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    try {
-      authMessage("Comprobando…", "info");
-      const data = await apiRequest("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ username: formData.get("username"), password: formData.get("password") }),
-      });
-      unlockApp(data.user);
-    } catch (error) {
-      authMessage(error.message);
-    }
   }
 
   function unlockApp(user) {
@@ -1831,7 +1661,7 @@
 
   async function initAuth() {
     applyTheme(state.settings.theme);
-    authConfiguration = await apiRequest("/api/auth/config").catch(() => ({ microsoftEnabled: false, localAdminLoginEnabled: true }));
+    authConfiguration = await apiRequest("/api/auth/config").catch(() => ({ microsoftEnabled: true, localAdminLoginEnabled: false, portalLaunchUrl: "https://portal.camaraceuta.workers.dev/api/apps/gestion-jornadas/launch" }));
     try {
       const data = await apiRequest("/api/auth/session");
       unlockApp(data.user);
@@ -1846,12 +1676,8 @@
         renderAuth({ signedOut: true });
         return;
       }
-      if (authConfiguration.microsoftEnabled && (params.get("local_admin") !== "1" || !authConfiguration.localAdminLoginEnabled)) {
-        renderAuthRedirect();
-        window.setTimeout(microsoftLogin, 150);
-        return;
-      }
-      renderAuth();
+      renderAuthRedirect();
+      window.setTimeout(microsoftLogin, 150);
     }
   }
 
