@@ -835,6 +835,7 @@
     appView.querySelectorAll("[data-edit-podcast-episode]").forEach((button) => button.addEventListener("click", () => openPodcastEpisodeModal(button.dataset.editPodcastEpisode)));
     appView.querySelectorAll("[data-edit-podcast-schedule]").forEach((button) => button.addEventListener("click", () => openPodcastScheduleModal(button.dataset.editPodcastSchedule)));
     appView.querySelectorAll("[data-toggle-user]").forEach((button) => button.addEventListener("click", () => toggleUser(button.dataset.toggleUser, button.dataset.active === "true")));
+    appView.querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => openUserEditModal(button.dataset.editUser)));
     appView.querySelectorAll("[data-reset-user]").forEach((button) => button.addEventListener("click", () => openPasswordModal(button.dataset.resetUser)));
     appView.querySelectorAll("[data-access-user]").forEach((button) => button.addEventListener("click", () => openUserAccessModal(button.dataset.accessUser)));
     appView.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => removeUser(button.dataset.deleteUser)));
@@ -1504,6 +1505,7 @@
                 <td><span class="status-badge ${user.active ? "success" : "neutral"}">${user.active ? "Activo" : "Desactivado"}</span></td>
                 <td>${user.last_login_at ? new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date(user.last_login_at)) : "Nunca"}</td>
                 <td><div class="user-actions">
+                  <button class="secondary-button compact-button" data-edit-user="${user.id}">Editar</button>
                   <button class="secondary-button compact-button" data-access-user="${user.id}">Permisos</button>
                   <button class="secondary-button compact-button" data-reset-user="${user.id}">Contraseña</button>
                   ${user.id !== currentUser.id ? `<button class="secondary-button compact-button" data-toggle-user="${user.id}" data-active="${Boolean(user.active)}">${user.active ? "Desactivar" : "Activar"}</button><button class="danger-text-button" data-delete-user="${user.id}">Eliminar</button>` : ""}
@@ -1596,6 +1598,41 @@
         await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ resetEntraLink: true }) });
         closeModal();
         showToast("Cuenta de Microsoft desvinculada");
+        await loadUsers();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+
+  function openUserEditModal(userId) {
+    const user = usersCache.find((item) => item.id === userId);
+    if (!user) return;
+    openModal("Editar usuario", "Administración", `
+      <form id="userEditForm" class="form-stack">
+        <div class="form-grid">
+          <label class="field"><span>Usuario</span><input name="username" value="${escapeHtml(user.username)}" minlength="3" maxlength="50" pattern="[A-Za-z0-9._-]+" autocomplete="off" required /></label>
+          <label class="field"><span>Nombre visible</span><input name="displayName" value="${escapeHtml(user.display_name)}" minlength="2" maxlength="80" required /></label>
+          <label class="field span-2"><span>Correo corporativo Microsoft</span><input name="email" type="email" value="${escapeHtml(user.email || "")}" autocomplete="off" placeholder="usuario@camaradeceuta.es" /></label>
+        </div>
+        <p class="form-help">El correo se guarda en la base de datos y se utilizará para vincular la cuenta de Microsoft en el primer acceso.</p>
+        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar usuario</button></footer>
+      </form>`);
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#userEditForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      try {
+        await apiRequest(`/api/users/${userId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            username: String(formData.get("username") || ""),
+            displayName: String(formData.get("displayName") || ""),
+            email: String(formData.get("email") || ""),
+          }),
+        });
+        closeModal();
+        showToast("Usuario actualizado");
         await loadUsers();
       } catch (error) {
         showToast(error.message);

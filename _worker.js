@@ -460,7 +460,7 @@ async function updateUser(request, env, userId) {
   const access = await requireUser(request, env, "admin");
   if (access.error) return access.error;
   const body = await requestBody(request);
-  const target = await env.AUTH_DB.prepare("SELECT id, email, role, modules, active, entra_oid FROM users WHERE id = ?").bind(userId).first();
+  const target = await env.AUTH_DB.prepare("SELECT id, username, display_name, email, role, modules, active, entra_oid FROM users WHERE id = ?").bind(userId).first();
   if (!target) return json({ error: "Usuario no encontrado" }, 404);
   if (userId === access.session.id && (body.active === false || (body.accessProfile && body.accessProfile !== "admin") || (body.role && body.role !== "admin"))) {
     return json({ error: "No puedes retirar tus propios permisos" }, 400);
@@ -485,16 +485,22 @@ async function updateUser(request, env, userId) {
   const modules = requestedAccess.modules;
   const accessChanged = role !== target.role || modules !== target.modules;
   const active = typeof body.active === "boolean" ? Number(body.active) : target.active;
+  const username = Object.prototype.hasOwnProperty.call(body, "username") ? String(body.username || "").trim() : target.username;
+  const displayName = Object.prototype.hasOwnProperty.call(body, "displayName") ? String(body.displayName || "").trim() : target.display_name;
   const email = Object.prototype.hasOwnProperty.call(body, "email") ? normalizeEmail(body.email) : target.email;
+  if (!/^[a-zA-Z0-9._-]{3,50}$/.test(username)) return json({ error: "El usuario debe tener entre 3 y 50 caracteres válidos" }, 400);
+  if (displayName.length < 2 || displayName.length > 80) return json({ error: "Indica un nombre visible válido" }, 400);
   if (Object.prototype.hasOwnProperty.call(body, "email") && body.email && !email) return json({ error: "Indica un correo corporativo válido" }, 400);
   if (target.role === "admin" && (role !== "admin" || !active)) {
     const adminCount = await env.AUTH_DB.prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND active = 1").first();
     if (Number(adminCount.total) <= 1) return json({ error: "Debe existir al menos un administrador activo" }, 400);
   }
   try {
-    await env.AUTH_DB.prepare("UPDATE users SET role = ?, modules = ?, email = ?, active = ? WHERE id = ?").bind(role, modules, email || null, active, userId).run();
+    await env.AUTH_DB.prepare("UPDATE users SET username = ?, display_name = ?, role = ?, modules = ?, email = ?, active = ? WHERE id = ?")
+      .bind(username, displayName, role, modules, email || null, active, userId)
+      .run();
   } catch (error) {
-    return json({ error: "Ese correo corporativo ya pertenece a otro usuario" }, 409);
+    return json({ error: "Ese usuario o correo corporativo ya pertenece a otra cuenta" }, 409);
   }
   if (body.resetEntraLink === true) {
     await env.AUTH_DB.prepare("UPDATE users SET entra_oid = NULL, entra_tenant_id = NULL, auth_provider = 'local' WHERE id = ?").bind(userId).run();
