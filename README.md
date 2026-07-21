@@ -2,7 +2,7 @@
 
 Aplicación web independiente para gestionar las jornadas de la Oficina Acelera Pyme. El proyecto no modifica ni sincroniza el Excel original.
 
-La aplicación se entrega limpia, sin jornadas, contactos, partidas presupuestarias, facturas ni credenciales precargadas. En el primer acceso se crea el usuario administrador y la contraseña local.
+El acceso es cerrado: únicamente un administrador puede crear usuarios y asignarles los módulos disponibles.
 
 ## Funciones incluidas
 
@@ -26,6 +26,8 @@ La aplicación se entrega limpia, sin jornadas, contactos, partidas presupuestar
 - Login cerrado con usuarios almacenados en Cloudflare D1.
 - Sesiones seguras mediante cookie `HttpOnly`, `Secure` y `SameSite=Strict`.
 - Panel exclusivo para administradores con alta, baja, activación y cambio de contraseña de usuarios.
+- Perfiles de acceso: Solo Jornadas, Solo Podcast, Jornadas + Podcast y Administrador.
+- Módulo Podcast compartido con control de episodios, calendario editorial, indicadores y cancelados.
 
 ## Cómo abrirlo
 
@@ -45,7 +47,7 @@ No existe registro público. El administrador inicial se crea directamente en Cl
 
 ## Persistencia
 
-Los cambios se guardan en `localStorage`, dentro del navegador y equipo donde se utiliza. Para compartir datos entre varios usuarios hará falta añadir un backend, una base de datos y autenticación antes del despliegue definitivo.
+Los datos de Jornadas se guardan en `localStorage`, dentro del navegador y equipo donde se utiliza. Los usuarios, sesiones y datos de Podcast se guardan en Cloudflare D1 para compartirlos entre las cuentas autorizadas.
 
 Los PDF se guardan como archivos binarios en `IndexedDB`, dentro del mismo navegador. No se incluyen en la copia JSON: deben descargarse individualmente desde la jornada. Borrar los datos del sitio o cambiar de navegador elimina este almacenamiento local. Para producción será necesario usar almacenamiento privado de servidor o de objetos.
 

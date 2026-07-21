@@ -34,22 +34,25 @@
         </div>
 
         <nav class="main-nav" aria-label="Navegación principal">
-          <button class="nav-item active" data-view="dashboard">
+          <button class="nav-item active" data-view="dashboard" data-access="jornadas">
             <span aria-hidden="true">⌂</span> Resumen
           </button>
-          <button class="nav-item" data-view="events">
+          <button class="nav-item" data-view="events" data-access="jornadas">
             <span aria-hidden="true">▣</span> Jornadas
           </button>
-          <button class="nav-item" data-view="calendar">
+          <button class="nav-item" data-view="calendar" data-access="jornadas">
             <span aria-hidden="true">▦</span> Calendario
           </button>
-          <button class="nav-item" data-view="budget">
+          <button class="nav-item" data-view="podcast" data-access="podcast">
+            <span aria-hidden="true">◉</span> Podcast
+          </button>
+          <button class="nav-item" data-view="budget" data-access="jornadas">
             <span aria-hidden="true">€</span> Presupuesto
           </button>
-          <button class="nav-item" data-view="contacts">
+          <button class="nav-item" data-view="contacts" data-access="jornadas">
             <span aria-hidden="true">◎</span> Contactos
           </button>
-          <button class="nav-item" data-view="data">
+          <button class="nav-item" data-view="data" data-access="jornadas">
             <span aria-hidden="true">⇅</span> Datos y copias
           </button>
           <button class="nav-item" data-view="users" id="usersNav" hidden>

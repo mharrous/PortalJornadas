@@ -414,6 +414,23 @@ tbody tr:hover { background: linear-gradient(90deg, #fff8e8, #ffecc1); }
 .danger-text-button:hover { text-decoration: underline; }
 .form-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .logout-button { min-height: 38px; padding: 8px 12px; }
+.nav-item[hidden] { display: none; }
+.field-wide { grid-column: 1 / -1; }
+.checkbox-field { display: flex; align-items: center; flex-direction: row; gap: 10px; min-height: 46px; }
+.checkbox-field input { width: 18px; height: 18px; accent-color: var(--theme-primary-end); }
+.podcast-toolbar { align-items: flex-end; }
+.podcast-toolbar-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.podcast-tabs { display: flex; gap: 8px; margin: 0 0 18px; padding: 6px; overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(145deg, rgba(255,255,255,.9), rgba(255,248,232,.78)); }
+.podcast-tab { flex: 0 0 auto; padding: 10px 14px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }
+.podcast-tab.active { color: #fff; background: linear-gradient(135deg, var(--theme-primary-start), var(--theme-primary-end)); box-shadow: 0 6px 14px color-mix(in srgb, var(--theme-primary-end) 20%, transparent); }
+.podcast-loading { padding: 30px; text-align: center; }
+.podcast-loading p { margin-bottom: 0; color: var(--muted); }
+.podcast-table { min-width: 1320px; }
+.podcast-progress-list { display: grid; gap: 8px; }
+.podcast-progress-row { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(120px, 280px) 46px; align-items: center; gap: 16px; width: 100%; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; color: inherit; background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(255,248,232,.72)); text-align: left; cursor: pointer; }
+.podcast-progress-row span:first-child strong, .podcast-progress-row span:first-child small { display: block; }
+.podcast-progress-row span:first-child small { margin-top: 4px; color: var(--muted); }
+.podcast-progress-row > b { text-align: right; }
 
 @media (max-width: 1100px) {
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -466,6 +483,11 @@ tbody tr:hover { background: linear-gradient(90deg, #fff8e8, #ffecc1); }
   .modal-actions { align-items: stretch; flex-direction: column-reverse; }
   .modal-actions > div { width: 100%; }
   .modal-actions > div button { flex: 1; }
+  .podcast-toolbar { align-items: stretch; }
+  .podcast-toolbar-actions { width: 100%; }
+  .podcast-toolbar-actions button { flex: 1; }
+  .podcast-progress-row { grid-template-columns: 1fr 42px; }
+  .podcast-progress-row .progress-bar { grid-column: 1 / -1; grid-row: 2; }
 }
 
 /* Refinamiento visual: degradados institucionales suaves y consistentes */

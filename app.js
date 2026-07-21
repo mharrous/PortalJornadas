@@ -9,6 +9,7 @@
     dashboard: "Resumen anual",
     events: "Gestión de jornadas",
     calendar: "Calendario",
+    podcast: "Gestión de Podcast",
     budget: "Control presupuestario",
     contacts: "Agenda de contactos",
     data: "Datos y copias de seguridad",
@@ -41,6 +42,11 @@
   let currentUser = null;
   let usersCache = [];
   let usersLoading = false;
+  let podcastEpisodes = [];
+  let podcastSchedule = [];
+  let podcastLoading = false;
+  let podcastLoaded = false;
+  let podcastSection = "dashboard";
 
   const uid = () =>
     globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -229,7 +235,24 @@
     return status === "Completada" ? "success" : status === "Seguimiento" ? "warning" : "info";
   }
 
+  function hasModule(module) {
+    return currentUser?.role === "admin" || currentUser?.modules?.includes(module);
+  }
+
+  function canAccessView(view) {
+    if (view === "users") return currentUser?.role === "admin";
+    if (view === "podcast") return hasModule("podcast");
+    return hasModule("jornadas");
+  }
+
+  function firstAllowedView() {
+    if (hasModule("jornadas")) return "dashboard";
+    if (hasModule("podcast")) return "podcast";
+    return "dashboard";
+  }
+
   function render() {
+    if (!canAccessView(currentView)) currentView = firstAllowedView();
     viewTitle.textContent = viewTitles[currentView];
     document.querySelectorAll(".nav-item").forEach((button) => {
       button.classList.toggle("active", button.dataset.view === currentView);
@@ -239,14 +262,17 @@
       dashboard: renderDashboard,
       events: renderEvents,
       calendar: renderCalendar,
+      podcast: renderPodcast,
       budget: renderBudget,
       contacts: renderContacts,
       data: renderData,
       users: renderUsers,
     };
     appView.innerHTML = renderers[currentView]();
+    document.querySelector("#quickAddEvent").hidden = currentView === "podcast" || !hasModule("jornadas");
     bindViewEvents();
     if (currentView === "users" && currentUser?.role === "admin" && !usersCache.length && !usersLoading) loadUsers();
+    if (currentView === "podcast" && !podcastLoaded && !podcastLoading) loadPodcast();
   }
 
   function renderDashboard() {
@@ -370,6 +396,103 @@
         ></iframe>
       </section>
     `;
+  }
+
+  function podcastProgress(episode) {
+    const completeStatuses = new Set(["grabado", "realizado", "publicado", "completado", "editado", "ok"]);
+    const fields = [episode.recording_status, episode.editing_status, episode.publication_status, episode.social_status];
+    return Math.round((fields.filter((status) => completeStatuses.has(String(status || "").toLowerCase())).length / fields.length) * 100);
+  }
+
+  function podcastStatusClass(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (["publicado", "completado", "realizado", "ok", "editado"].includes(normalized)) return "success";
+    if (["grabado", "en edición", "en edicion"].includes(normalized)) return "warning";
+    return "neutral";
+  }
+
+  function podcastTabs() {
+    return `<div class="podcast-tabs" role="tablist" aria-label="Secciones de Podcast">
+      ${[
+        ["dashboard", "Resumen"],
+        ["episodes", "Episodios"],
+        ["schedule", "Calendario editorial"],
+        ["cancelled", "Cancelados"],
+      ].map(([value, label]) => `<button class="podcast-tab ${podcastSection === value ? "active" : ""}" data-podcast-tab="${value}">${label}</button>`).join("")}
+    </div>`;
+  }
+
+  function renderPodcast() {
+    if (!hasModule("podcast")) return emptyState("No tienes acceso al módulo Podcast");
+    if (!podcastLoaded) return `<section class="panel podcast-loading"><strong>Cargando Podcast…</strong><p>Recuperando episodios y calendario compartido.</p></section>`;
+    const activeEpisodes = podcastEpisodes.filter((episode) => !episode.cancelled);
+    const cancelledEpisodes = podcastEpisodes.filter((episode) => episode.cancelled);
+    const published = activeEpisodes.filter((episode) => String(episode.publication_status).toLowerCase() === "publicado").length;
+    const shared = activeEpisodes.filter((episode) => String(episode.social_status).toLowerCase() === "publicado").length;
+    const average = activeEpisodes.length ? Math.round(activeEpisodes.reduce((sum, episode) => sum + podcastProgress(episode), 0) / activeEpisodes.length) : 0;
+    return `
+      <div class="section-toolbar podcast-toolbar">
+        <div><p class="eyebrow">De Mitos a Negocios</p><h2>Control de Podcast</h2><p class="section-copy">Información compartida entre todos los usuarios con acceso a Podcast.</p></div>
+        <div class="podcast-toolbar-actions"><button class="secondary-button" data-new-podcast-schedule>+ Publicación</button><button class="primary-button" data-new-podcast-episode>+ Episodio</button></div>
+      </div>
+      ${podcastTabs()}
+      ${podcastSection === "dashboard" ? renderPodcastDashboard(activeEpisodes, published, shared, average, cancelledEpisodes.length) : ""}
+      ${podcastSection === "episodes" ? renderPodcastEpisodes(activeEpisodes) : ""}
+      ${podcastSection === "schedule" ? renderPodcastSchedule() : ""}
+      ${podcastSection === "cancelled" ? renderPodcastCancelled(cancelledEpisodes) : ""}`;
+  }
+
+  function renderPodcastDashboard(episodes, published, shared, average, cancelledCount) {
+    const pending = episodes.filter((episode) => podcastProgress(episode) < 100).slice(0, 8);
+    return `
+      <div class="metric-grid podcast-metrics">
+        ${metricCard("Episodios totales", episodes.length, "Control activo", "navy")}
+        ${metricCard("Publicados", published, "Publicación completada", "green")}
+        ${metricCard("Difundidos", shared, "Difusión en RRSS", "gold")}
+        ${metricCard("Progreso medio", `${average}%`, `${cancelledCount} cancelado${cancelledCount === 1 ? "" : "s"}`, "coral")}
+      </div>
+      <section class="panel table-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Seguimiento</p><h3>Próximos pasos</h3></div><button class="text-button" data-podcast-tab="episodes">Ver todos →</button></div>
+        <div class="podcast-progress-list">
+          ${pending.length ? pending.map((episode) => `<button class="podcast-progress-row" data-edit-podcast-episode="${episode.id}">
+            <span><strong>${escapeHtml(episode.episode_label)} · ${escapeHtml(episode.topic)}</strong><small>${escapeHtml(episode.guest || "Sin invitado")} · ${escapeHtml(episode.responsible || "Sin responsable")}</small></span>
+            <span class="progress-bar"><i style="width:${podcastProgress(episode)}%"></i></span><b>${podcastProgress(episode)}%</b>
+          </button>`).join("") : emptyState("Todos los episodios están completados")}
+        </div>
+      </section>`;
+  }
+
+  function renderPodcastEpisodes(episodes) {
+    return `<section class="panel table-panel podcast-table-panel">
+      <div class="panel-heading"><div><p class="eyebrow">Control Episodios</p><h3>${episodes.length} episodios activos</h3></div><span class="muted">Haz clic en editar para actualizar el flujo</span></div>
+      <div class="responsive-table"><table class="podcast-table"><thead><tr><th>Episodio</th><th>Tema / Mito</th><th>Invitado</th><th>Grabación</th><th>Edición</th><th>Publicación</th><th>RRSS</th><th>Progreso</th><th>Responsable</th><th></th></tr></thead><tbody>
+        ${episodes.map((episode) => `<tr>
+          <td><strong>${escapeHtml(episode.episode_label)}</strong><small>${formatDate(episode.recording_date)}</small></td>
+          <td>${escapeHtml(episode.topic)}</td><td>${escapeHtml(episode.guest || "—")}</td>
+          ${[episode.recording_status, episode.editing_status, episode.publication_status, episode.social_status].map((status) => `<td><span class="status-badge ${podcastStatusClass(status)}">${escapeHtml(status)}</span></td>`).join("")}
+          <td><strong>${podcastProgress(episode)}%</strong></td><td>${escapeHtml(episode.responsible || "—")}</td>
+          <td><button class="secondary-button compact-button" data-edit-podcast-episode="${episode.id}">Editar</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>
+    </section>`;
+  }
+
+  function renderPodcastSchedule() {
+    return `<section class="panel table-panel podcast-table-panel">
+      <div class="panel-heading"><div><p class="eyebrow">Calendario Mensual</p><h3>Plan de publicaciones</h3></div><span class="muted">Orden importado del Excel</span></div>
+      <div class="responsive-table"><table><thead><tr><th>Mes</th><th>Episodio</th><th>Fecha / Semana</th><th>Acción</th><th>Responsable</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${podcastSchedule.map((item) => `<tr><td><strong>${escapeHtml(item.month || "—")}</strong></td><td>${escapeHtml(item.episode_number || "—")}</td><td>${escapeHtml(item.week_label)}</td><td>${escapeHtml(item.action || "—")}</td><td>${escapeHtml(item.responsible || "—")}</td><td><span class="status-badge ${podcastStatusClass(item.status)}">${escapeHtml(item.status)}</span></td><td><button class="secondary-button compact-button" data-edit-podcast-schedule="${item.id}">Editar</button></td></tr>`).join("")}
+      </tbody></table></div>
+    </section>`;
+  }
+
+  function renderPodcastCancelled(episodes) {
+    return `<section class="panel table-panel podcast-table-panel">
+      <div class="panel-heading"><div><p class="eyebrow">Archivo</p><h3>Episodios cancelados</h3></div><span class="count-pill">${episodes.length}</span></div>
+      <div class="responsive-table"><table><thead><tr><th>Episodio</th><th>Tema</th><th>Invitado</th><th>Fecha</th><th>Motivo</th><th>Responsable</th><th></th></tr></thead><tbody>
+        ${episodes.length ? episodes.map((episode) => `<tr><td>${escapeHtml(episode.episode_label)}</td><td><strong>${escapeHtml(episode.topic)}</strong></td><td>${escapeHtml(episode.guest || "—")}</td><td>${formatDate(episode.recording_date)}</td><td>${escapeHtml(episode.cancel_reason || "Sin motivo")}</td><td>${escapeHtml(episode.responsible || "—")}</td><td><button class="secondary-button compact-button" data-edit-podcast-episode="${episode.id}">Editar</button></td></tr>`).join("") : `<tr><td colspan="7">${emptyState("No hay episodios cancelados")}</td></tr>`}
+      </tbody></table></div>
+    </section>`;
   }
 
   function renderEvents() {
@@ -616,12 +739,19 @@
     document.querySelector("#importJson")?.addEventListener("change", importJson);
     document.querySelector("#resetData")?.addEventListener("click", resetData);
     document.querySelector("[data-new-user]")?.addEventListener("click", openUserModal);
+    document.querySelector("[data-new-podcast-episode]")?.addEventListener("click", () => openPodcastEpisodeModal());
+    document.querySelector("[data-new-podcast-schedule]")?.addEventListener("click", () => openPodcastScheduleModal());
+    appView.querySelectorAll("[data-podcast-tab]").forEach((button) => button.addEventListener("click", () => { podcastSection = button.dataset.podcastTab; render(); }));
+    appView.querySelectorAll("[data-edit-podcast-episode]").forEach((button) => button.addEventListener("click", () => openPodcastEpisodeModal(button.dataset.editPodcastEpisode)));
+    appView.querySelectorAll("[data-edit-podcast-schedule]").forEach((button) => button.addEventListener("click", () => openPodcastScheduleModal(button.dataset.editPodcastSchedule)));
     appView.querySelectorAll("[data-toggle-user]").forEach((button) => button.addEventListener("click", () => toggleUser(button.dataset.toggleUser, button.dataset.active === "true")));
     appView.querySelectorAll("[data-reset-user]").forEach((button) => button.addEventListener("click", () => openPasswordModal(button.dataset.resetUser)));
+    appView.querySelectorAll("[data-access-user]").forEach((button) => button.addEventListener("click", () => openUserAccessModal(button.dataset.accessUser)));
     appView.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => removeUser(button.dataset.deleteUser)));
   }
 
   function navigate(view) {
+    if (!canAccessView(view)) return;
     currentView = view;
     document.querySelector("#sidebar").classList.remove("open");
     render();
@@ -1105,6 +1235,145 @@
     return data;
   }
 
+  async function loadPodcast() {
+    if (podcastLoading) return;
+    podcastLoading = true;
+    try {
+      const data = await apiRequest("/api/podcast");
+      podcastEpisodes = data.episodes || [];
+      podcastSchedule = data.schedule || [];
+      podcastLoaded = true;
+      if (currentView === "podcast") render();
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      podcastLoading = false;
+    }
+  }
+
+  function podcastOptions(selected, values) {
+    return values.map((value) => `<option value="${value}" ${String(selected || "Pendiente").toLowerCase() === value.toLowerCase() ? "selected" : ""}>${value}</option>`).join("");
+  }
+
+  function openPodcastEpisodeModal(episodeId) {
+    const episode = podcastEpisodes.find((item) => item.id === episodeId) || {
+      episode_label: `Ep.${podcastEpisodes.filter((item) => !item.cancelled).length + 1}`,
+      topic: "",
+      guest: "",
+      recording_date: "",
+      recording_status: "Pendiente",
+      editing_status: "Pendiente",
+      publication_status: "Pendiente",
+      social_status: "Pendiente",
+      press_status: "Pendiente",
+      logos: "",
+      responsible: "",
+      cancelled: 0,
+      cancel_reason: "",
+    };
+    const statuses = ["Pendiente", "Grabado", "En edición", "Editado", "Realizado", "Publicado"];
+    openModal(episodeId ? "Editar episodio" : "Nuevo episodio", "Podcast", `
+      <form id="podcastEpisodeForm" class="form-stack">
+        <div class="form-grid podcast-form-grid">
+          <label class="field"><span>Episodio</span><input name="episodeLabel" value="${escapeHtml(episode.episode_label)}" maxlength="40" required /></label>
+          <label class="field field-wide"><span>Tema / Mito</span><input name="topic" value="${escapeHtml(episode.topic)}" maxlength="160" required /></label>
+          <label class="field field-wide"><span>Invitado</span><input name="guest" value="${escapeHtml(episode.guest)}" maxlength="180" /></label>
+          <label class="field"><span>Fecha de grabación</span><input name="recordingDate" type="date" value="${escapeHtml(episode.recording_date || "")}" /></label>
+          <label class="field"><span>Estado grabación</span><select name="recordingStatus">${podcastOptions(episode.recording_status, statuses)}</select></label>
+          <label class="field"><span>Estado edición</span><select name="editingStatus">${podcastOptions(episode.editing_status, statuses)}</select></label>
+          <label class="field"><span>Estado publicación</span><select name="publicationStatus">${podcastOptions(episode.publication_status, statuses)}</select></label>
+          <label class="field"><span>Difusión RRSS</span><select name="socialStatus">${podcastOptions(episode.social_status, statuses)}</select></label>
+          <label class="field"><span>Aviso de prensa</span><select name="pressStatus">${podcastOptions(episode.press_status, statuses)}</select></label>
+          <label class="field"><span>Logos</span><input name="logos" value="${escapeHtml(episode.logos)}" maxlength="160" /></label>
+          <label class="field"><span>Responsable</span><input name="responsible" value="${escapeHtml(episode.responsible)}" maxlength="100" /></label>
+          <label class="field checkbox-field field-wide"><input name="cancelled" type="checkbox" ${episode.cancelled ? "checked" : ""} /><span>Marcar como cancelado</span></label>
+          <label class="field field-wide"><span>Motivo de cancelación</span><input name="cancelReason" value="${escapeHtml(episode.cancel_reason)}" maxlength="240" /></label>
+        </div>
+        <footer class="modal-actions">${episodeId ? `<button class="danger-text-button" type="button" id="deletePodcastEpisode">Eliminar</button>` : "<span></span>"}<button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar episodio</button></footer>
+      </form>`);
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#podcastEpisodeForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      const payload = Object.fromEntries(formData);
+      payload.cancelled = formData.get("cancelled") === "on";
+      try {
+        await apiRequest(episodeId ? `/api/podcast/episodes/${episodeId}` : "/api/podcast/episodes", { method: episodeId ? "PATCH" : "POST", body: JSON.stringify(payload) });
+        closeModal();
+        podcastLoaded = false;
+        showToast(episodeId ? "Episodio actualizado" : "Episodio creado");
+        await loadPodcast();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    document.querySelector("#deletePodcastEpisode")?.addEventListener("click", async () => {
+      if (!window.confirm("¿Eliminar definitivamente este episodio?")) return;
+      try {
+        await apiRequest(`/api/podcast/episodes/${episodeId}`, { method: "DELETE" });
+        closeModal();
+        podcastLoaded = false;
+        showToast("Episodio eliminado");
+        await loadPodcast();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+
+  function openPodcastScheduleModal(scheduleId) {
+    const item = podcastSchedule.find((entry) => entry.id === scheduleId) || { month: "", episode_number: "", week_label: "", action: "", responsible: "OAP", status: "Pendiente" };
+    const months = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
+    openModal(scheduleId ? "Editar publicación" : "Nueva publicación", "Podcast", `
+      <form id="podcastScheduleForm" class="form-stack">
+        <div class="form-grid">
+          <label class="field"><span>Mes</span><select name="month"><option value="">Sin mes</option>${months.map((month) => `<option ${item.month === month ? "selected" : ""}>${month}</option>`).join("")}</select></label>
+          <label class="field"><span>Episodio</span><input name="episodeNumber" value="${escapeHtml(item.episode_number)}" maxlength="30" /></label>
+          <label class="field field-wide"><span>Fecha / Semana</span><input name="weekLabel" value="${escapeHtml(item.week_label)}" maxlength="100" required /></label>
+          <label class="field"><span>Acción</span><input name="action" value="${escapeHtml(item.action)}" maxlength="100" /></label>
+          <label class="field"><span>Responsable</span><input name="responsible" value="${escapeHtml(item.responsible)}" maxlength="100" /></label>
+          <label class="field"><span>Estado</span><select name="status">${podcastOptions(item.status, ["Pendiente", "Planificado", "Completado", "Publicado"])}</select></label>
+        </div>
+        <footer class="modal-actions">${scheduleId ? `<button class="danger-text-button" type="button" id="deletePodcastSchedule">Eliminar</button>` : "<span></span>"}<button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar publicación</button></footer>
+      </form>`);
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#podcastScheduleForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await apiRequest(scheduleId ? `/api/podcast/schedule/${scheduleId}` : "/api/podcast/schedule", { method: scheduleId ? "PATCH" : "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
+        closeModal();
+        podcastLoaded = false;
+        showToast(scheduleId ? "Publicación actualizada" : "Publicación creada");
+        await loadPodcast();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    document.querySelector("#deletePodcastSchedule")?.addEventListener("click", async () => {
+      if (!window.confirm("¿Eliminar esta publicación del calendario?")) return;
+      try {
+        await apiRequest(`/api/podcast/schedule/${scheduleId}`, { method: "DELETE" });
+        closeModal();
+        podcastLoaded = false;
+        showToast("Publicación eliminada");
+        await loadPodcast();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+
+  function userAccessProfile(user) {
+    if (user.role === "admin") return "admin";
+    const modules = String(user.modules || "jornadas").split(",");
+    if (modules.includes("jornadas") && modules.includes("podcast")) return "both";
+    return modules.includes("podcast") ? "podcast" : "jornadas";
+  }
+
+  function userAccessLabel(user) {
+    return { admin: "Administrador", both: "Jornadas + Podcast", podcast: "Solo Podcast", jornadas: "Solo Jornadas" }[userAccessProfile(user)];
+  }
+
   function renderUsers() {
     if (currentUser?.role !== "admin") return `<div class="empty-state"><strong>Acceso restringido</strong><p>Solo los administradores pueden gestionar usuarios.</p></div>`;
     return `
@@ -1114,16 +1383,17 @@
       </div>
       <div class="table-card users-card">
         <table class="data-table users-table">
-          <thead><tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead>
+          <thead><tr><th>Usuario</th><th>Nombre</th><th>Perfil de acceso</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead>
           <tbody>
             ${usersCache.length ? usersCache.map((user) => `
               <tr>
                 <td><strong>${escapeHtml(user.username)}</strong>${user.id === currentUser.id ? `<small class="current-user-label">Tu cuenta</small>` : ""}</td>
                 <td>${escapeHtml(user.display_name)}</td>
-                <td><span class="status-badge ${user.role === "admin" ? "warning" : "info"}">${user.role === "admin" ? "Administrador" : "Usuario"}</span></td>
+                <td><span class="status-badge ${user.role === "admin" ? "warning" : "info"}">${userAccessLabel(user)}</span></td>
                 <td><span class="status-badge ${user.active ? "success" : "neutral"}">${user.active ? "Activo" : "Desactivado"}</span></td>
                 <td>${user.last_login_at ? new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date(user.last_login_at)) : "Nunca"}</td>
                 <td><div class="user-actions">
+                  <button class="secondary-button compact-button" data-access-user="${user.id}">Permisos</button>
                   <button class="secondary-button compact-button" data-reset-user="${user.id}">Contraseña</button>
                   ${user.id !== currentUser.id ? `<button class="secondary-button compact-button" data-toggle-user="${user.id}" data-active="${Boolean(user.active)}">${user.active ? "Desactivar" : "Activar"}</button><button class="danger-text-button" data-delete-user="${user.id}">Eliminar</button>` : ""}
                 </div></td>
@@ -1153,7 +1423,7 @@
         <div class="form-grid">
           <label class="field"><span>Usuario</span><input name="username" minlength="3" maxlength="50" pattern="[A-Za-z0-9._-]+" autocomplete="off" required /></label>
           <label class="field"><span>Nombre visible</span><input name="displayName" minlength="2" maxlength="80" required /></label>
-          <label class="field"><span>Rol</span><select name="role"><option value="user">Usuario</option><option value="admin">Administrador</option></select></label>
+          <label class="field"><span>Perfil de acceso</span><select name="accessProfile"><option value="jornadas">Solo Jornadas</option><option value="podcast">Solo Podcast</option><option value="both">Jornadas + Podcast</option><option value="admin">Administrador</option></select></label>
           <label class="field"><span>Contraseña inicial</span><input name="password" type="password" minlength="10" autocomplete="new-password" required /></label>
         </div>
         <p class="form-help">Entrega la contraseña al usuario por un canal seguro. No se mostrará de nuevo.</p>
@@ -1167,6 +1437,39 @@
         await apiRequest("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(formData)) });
         closeModal();
         showToast("Usuario creado");
+        await loadUsers();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  }
+
+  function openUserAccessModal(userId) {
+    const user = usersCache.find((item) => item.id === userId);
+    if (!user) return;
+    const selected = userAccessProfile(user);
+    openModal("Permisos del usuario", "Administración", `
+      <form id="userAccessForm" class="form-stack">
+        <p>Selecciona qué apartados puede ver <strong>${escapeHtml(user.display_name)}</strong>.</p>
+        <label class="field"><span>Perfil de acceso</span><select name="accessProfile">
+          ${[
+            ["jornadas", "Solo Jornadas"],
+            ["podcast", "Solo Podcast"],
+            ["both", "Jornadas + Podcast"],
+            ["admin", "Administrador · acceso total"],
+          ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select></label>
+        <p class="form-help">Un usuario con “Solo Podcast” verá únicamente la categoría Podcast al iniciar sesión.</p>
+        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar permisos</button></footer>
+      </form>`);
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#userAccessForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const accessProfile = String(new FormData(event.currentTarget).get("accessProfile") || "jornadas");
+      try {
+        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ accessProfile }) });
+        closeModal();
+        showToast("Permisos actualizados");
         await loadUsers();
       } catch (error) {
         showToast(error.message);
@@ -1258,9 +1561,12 @@
   }
 
   function unlockApp(user) {
-    currentUser = user;
-    document.querySelector("#currentUserBadge").textContent = `${user.displayName} · ${user.role === "admin" ? "Admin" : "Usuario"}`;
+    currentUser = { ...user, modules: user.role === "admin" ? ["jornadas", "podcast"] : (user.modules || ["jornadas"]) };
+    const accessLabel = user.role === "admin" ? "Admin" : currentUser.modules.includes("jornadas") && currentUser.modules.includes("podcast") ? "Jornadas + Podcast" : currentUser.modules.includes("podcast") ? "Podcast" : "Jornadas";
+    document.querySelector("#currentUserBadge").textContent = `${user.displayName} · ${accessLabel}`;
+    document.querySelectorAll("[data-access]").forEach((item) => { item.hidden = !hasModule(item.dataset.access); });
     document.querySelector("#usersNav").hidden = user.role !== "admin";
+    currentView = firstAllowedView();
     authGate.hidden = true;
     appShell.hidden = false;
     render();
@@ -1270,6 +1576,9 @@
     await apiRequest("/api/auth/logout", { method: "POST" }).catch(() => null);
     currentUser = null;
     usersCache = [];
+    podcastEpisodes = [];
+    podcastSchedule = [];
+    podcastLoaded = false;
     currentView = "dashboard";
     appShell.hidden = true;
     authGate.hidden = false;
