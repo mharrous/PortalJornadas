@@ -242,13 +242,14 @@ async function updateUser(request, env, userId) {
   const requestedAccess = body.accessProfile || body.role || body.modules ? accessProfile(body) : { role: target.role, modules: target.modules };
   const role = requestedAccess.role;
   const modules = requestedAccess.modules;
+  const accessChanged = role !== target.role || modules !== target.modules;
   const active = typeof body.active === "boolean" ? Number(body.active) : target.active;
   if (target.role === "admin" && (role !== "admin" || !active)) {
     const adminCount = await env.AUTH_DB.prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND active = 1").first();
     if (Number(adminCount.total) <= 1) return json({ error: "Debe existir al menos un administrador activo" }, 400);
   }
   await env.AUTH_DB.prepare("UPDATE users SET role = ?, modules = ?, active = ? WHERE id = ?").bind(role, modules, active, userId).run();
-  if (!active) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
+  if (!active || accessChanged) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
   return json({ ok: true });
 }
 
