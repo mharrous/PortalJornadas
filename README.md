@@ -11,7 +11,10 @@ El acceso es cerrado: únicamente un administrador puede crear usuarios y asigna
 - Ubicación manual por jornada, incluyendo direcciones o enlaces de reunión.
 - Detección automática del trimestre según el mes y señal visual diferenciada.
 - Control automático de presupuesto máximo, gastos ejecutados y saldo disponible.
+- Presupuesto anual editable y suma automática del gasto ejecutado por trimestre.
 - Detalle de gastos por descripción, proveedor, importe y observaciones.
+- Gastos base predefinidos al crear una jornada: Sonido, Espacio, Merchandising y Ponente.
+- Recuperación automática sin duplicados de las jornadas incluidas en el CSV del 21/07/2026.
 - Facturas PDF asociadas a cada jornada mediante selección manual o arrastre.
 - Apertura de facturas en una pestaña nueva, descarga individual y eliminación.
 - Checklist operativo por jornada.

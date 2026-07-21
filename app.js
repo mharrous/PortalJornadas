@@ -55,6 +55,58 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function defaultExpenses() {
+    return (window.OAP_DEFAULT_EXPENSE_DESCRIPTIONS || ["Sonido", "Espacio", "Merchandising", "Ponente"]).map((description) => ({
+      id: uid(),
+      description,
+      provider: "",
+      amount: 0,
+      notes: "",
+    }));
+  }
+
+  function normalizedEventText(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/gi, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function applyRecoveryEvents(value) {
+    if (value.settings.recovery20260721Applied || !Array.isArray(window.OAP_RECOVERY_EVENTS_20260721)) return;
+    value.events ||= [];
+    window.OAP_RECOVERY_EVENTS_20260721.forEach((recovered) => {
+      const index = value.events.findIndex((item) =>
+        item.id === recovered.id ||
+        (item.date === recovered.date && normalizedEventText(item.title) === normalizedEventText(recovered.title)) ||
+        (item.date === recovered.date && normalizedEventText(item.speaker) === normalizedEventText(recovered.speaker)),
+      );
+      if (index < 0) {
+        value.events.push(clone(recovered));
+        return;
+      }
+      const existing = value.events[index];
+      value.events[index] = {
+        ...existing,
+        date: recovered.date,
+        format: recovered.format,
+        theme: recovered.theme,
+        title: recovered.title,
+        speaker: recovered.speaker,
+        location: recovered.location,
+        budget: Number(existing.budget || recovered.budget),
+        period: existing.period || recovered.period,
+        expenses: existing.expenses?.length ? existing.expenses : clone(recovered.expenses),
+        invoices: existing.invoices || [],
+        checklist: existing.checklist?.length ? existing.checklist : clone(recovered.checklist),
+        notes: existing.notes || recovered.notes,
+      };
+    });
+    value.settings.recovery20260721Applied = true;
+  }
+
   function loadState() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -66,16 +118,25 @@
   }
 
   let state = normalizeState(loadState());
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn("No se pudo guardar la recuperación automática", error);
+  }
 
   function normalizeState(value) {
     value.settings ||= {};
     value.settings.theme ||= "camara";
+    value.settings.annualBudget = Number(value.settings.annualBudget || 0);
+    applyRecoveryEvents(value);
     value.events = (value.events || []).map((item) => {
-      const venueExpense = (item.expenses || []).find((expense) =>
+      const expenses = item.expenses?.length ? item.expenses : defaultExpenses();
+      const venueExpense = expenses.find((expense) =>
         String(expense.description || "").toLowerCase().includes("alquiler de espacio"),
       );
       return {
         ...item,
+        expenses,
         location: item.location || (item.format === "Webinar" ? "Online" : venueExpense?.provider || ""),
         period: item.period || periodForDate(item.date),
         invoices: item.invoices || [],
@@ -169,6 +230,10 @@
       currency: "EUR",
       minimumFractionDigits: 2,
     }).format(Number(value || 0));
+  }
+
+  function percentageOf(value, total) {
+    return Number(total) > 0 ? Math.round((Number(value || 0) / Number(total)) * 100) : 0;
   }
 
   function formatDate(value) {
@@ -303,7 +368,7 @@
         <div class="hero-budget">
           <span>Presupuesto anual</span>
           <strong>${currency(state.settings.annualBudget)}</strong>
-          <small>${Math.max(0, Math.round((totalSpent / state.settings.annualBudget) * 100))}% ejecutado</small>
+          <small>${Math.max(0, percentageOf(totalSpent, state.settings.annualBudget))}% ejecutado</small>
         </div>
       </div>
 
@@ -552,13 +617,36 @@
     const executed = state.events.reduce((sum, item) => sum + eventSpent(item), 0);
     const available = state.settings.annualBudget - executed;
     const periodGroups = ["Enero - marzo", "Abril - diciembre"];
+    const quarterTotals = [
+      { id: "quarter-q1", label: "1.er trimestre", months: "Enero - marzo" },
+      { id: "quarter-q2", label: "2.º trimestre", months: "Abril - junio" },
+      { id: "quarter-q3", label: "3.er trimestre", months: "Julio - septiembre" },
+      { id: "quarter-q4", label: "4.º trimestre", months: "Octubre - diciembre" },
+    ].map((quarter) => {
+      const events = state.events.filter((item) => quarterForDate(item.date) === quarter.id);
+      return { ...quarter, events: events.length, spent: events.reduce((sum, item) => sum + eventSpent(item), 0) };
+    });
 
     return `
+      <section class="panel budget-settings-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Configuración</p><h3>Presupuesto anual editable</h3><p class="muted">Este importe se utiliza para calcular el saldo disponible de todo el año.</p></div>
+          <button class="secondary-button" data-edit-annual-budget>Editar presupuesto anual</button>
+        </div>
+      </section>
+
       <div class="metric-grid budget-metrics">
         ${metricCard("Presupuesto anual", currency(state.settings.annualBudget), "Techo global configurado", "navy")}
-        ${metricCard("Ejecutado", currency(executed), `${Math.round((executed / state.settings.annualBudget) * 100)}% del presupuesto anual`, "green")}
+        ${metricCard("Ejecutado", currency(executed), `${percentageOf(executed, state.settings.annualBudget)}% del presupuesto anual`, "green")}
         ${metricCard("Disponible", currency(available), available >= 0 ? "Saldo positivo" : "Presupuesto superado", available >= 0 ? "gold" : "coral")}
       </div>
+
+      <section class="panel quarter-spend-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Gasto ejecutado</p><h3>Total por trimestre</h3></div></div>
+        <div class="metric-grid quarter-spend-grid">
+          ${quarterTotals.map((quarter) => metricCard(quarter.label, currency(quarter.spent), `${quarter.events} jornada${quarter.events === 1 ? "" : "s"} · ${quarter.months}`, quarter.id)).join("")}
+        </div>
+      </section>
 
       <div class="budget-layout">
         ${periodGroups
@@ -710,6 +798,7 @@
     });
     appView.querySelectorAll("[data-new-contact]").forEach((button) => button.addEventListener("click", () => openContactModal()));
     appView.querySelectorAll("[data-edit-budget]").forEach((button) => button.addEventListener("click", () => openBudgetModal(button.dataset.editBudget)));
+    appView.querySelectorAll("[data-edit-annual-budget]").forEach((button) => button.addEventListener("click", openAnnualBudgetModal));
 
     document.querySelector("#eventSearch")?.addEventListener("input", (event) => {
       eventFilter.search = event.target.value;
@@ -791,7 +880,7 @@
           time: "",
           budget: 1350,
           period: "",
-          expenses: [],
+          expenses: defaultExpenses(),
           invoices: [],
           checklist: window.OAP_CHECKLIST.map((name) => ({ id: uid(), name, status: "pending" })),
           notes: "",
@@ -1134,6 +1223,26 @@
       if (!window.confirm("¿Eliminar este contacto de la aplicación?")) return;
       state.contacts = state.contacts.filter((item) => item.id !== modalDraft.id);
       saveState("Contacto eliminado");
+      closeModal();
+      render();
+    });
+  }
+
+  function openAnnualBudgetModal() {
+    openModal(
+      "Editar presupuesto anual",
+      "Control presupuestario",
+      `<form id="annualBudgetForm" class="form-stack">
+        <label class="field"><span>Presupuesto anual</span><input name="annualBudget" type="number" min="0" step="0.01" value="${Number(state.settings.annualBudget || 0)}" required autofocus /></label>
+        <p class="muted">El gasto ejecutado se calcula automáticamente sumando los gastos de todas las jornadas.</p>
+        <footer class="modal-actions"><span></span><div><button type="button" class="secondary-button" id="cancelModal">Cancelar</button><button type="submit" class="primary-button">Guardar presupuesto</button></div></footer>
+      </form>`,
+    );
+    document.querySelector("#cancelModal").addEventListener("click", closeModal);
+    document.querySelector("#annualBudgetForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      state.settings.annualBudget = Math.max(0, Number(new FormData(event.currentTarget).get("annualBudget") || 0));
+      saveState("Presupuesto anual actualizado");
       closeModal();
       render();
     });

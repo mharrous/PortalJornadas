@@ -287,6 +287,11 @@ tbody tr:hover { background: linear-gradient(90deg, #fff8e8, #ffecc1); }
 .positive { color: var(--green-700) !important; }
 
 .budget-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.budget-settings-panel { margin-bottom: 20px; }
+.budget-settings-panel .panel-heading > div { max-width: 680px; }
+.budget-settings-panel .muted { margin: 7px 0 0; }
+.quarter-spend-panel { margin-bottom: 20px; }
+.quarter-spend-grid { margin: 0; padding: 0 24px 24px; }
 .budget-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-bottom: 20px; }
 .budget-lines { padding: 0 20px 20px; }
 .budget-line { display: grid; grid-template-columns: minmax(180px, 1.5fr) repeat(3, minmax(90px, .7fr)); gap: 14px; align-items: center; padding: 15px 6px; border-top: 1px solid var(--line); }
@@ -806,6 +811,22 @@ body,
 .progress-bar span,
 .progress-bar i {
   background: linear-gradient(180deg, var(--theme-primary-start) 0%, var(--theme-accent) 100%);
+}
+
+.quarter-spend-grid .metric-card.quarter-q1 {
+  background: linear-gradient(135deg, color-mix(in srgb, #fff 92%, #b32135), color-mix(in srgb, #fff 72%, #b32135));
+}
+
+.quarter-spend-grid .metric-card.quarter-q2 {
+  background: linear-gradient(135deg, color-mix(in srgb, #fff 92%, #e8b123), color-mix(in srgb, #fff 70%, #e8b123));
+}
+
+.quarter-spend-grid .metric-card.quarter-q3 {
+  background: linear-gradient(135deg, color-mix(in srgb, #fff 92%, #dd6935), color-mix(in srgb, #fff 72%, #dd6935));
+}
+
+.quarter-spend-grid .metric-card.quarter-q4 {
+  background: linear-gradient(135deg, color-mix(in srgb, #fff 92%, #74183e), color-mix(in srgb, #fff 74%, #74183e));
 }
 
 .nav-item.active {
