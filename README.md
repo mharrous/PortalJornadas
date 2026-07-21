@@ -31,22 +31,30 @@ El acceso es cerrado: únicamente un administrador puede crear usuarios y asigna
 - Panel exclusivo para administradores con alta, baja, activación y cambio de contraseña de usuarios.
 - Perfiles de acceso: Solo Jornadas, Solo Podcast, Jornadas + Podcast y Administrador.
 - Módulo Podcast compartido con control de episodios, calendario editorial, indicadores y cancelados.
+- Microsoft Entra ID preparado mediante OpenID Connect, Authorization Code Flow y PKCE en el Worker.
+- Vinculación cerrada por correo preautorizado y por el identificador estable `tid` + `oid`.
 
 ## Cómo abrirlo
 
-La opción más sencilla es abrir `index.html` en un navegador moderno.
-
-Para servirlo localmente desde esta carpeta:
+La autenticación necesita el Worker y D1. Para desarrollo local, copia `.dev.vars.example` como `.dev.vars`, completa los valores y ejecuta:
 
 ```powershell
-python -m http.server 8080
+npx wrangler pages dev . --port 8788 --d1 AUTH_DB=615aa0b9-320e-4cca-87f8-9ec9801816bb
 ```
 
-Después abre `http://localhost:8080`.
+Después abre `http://localhost:8788`. No guardes `.dev.vars` en Git.
 
 ## Acceso
 
 No existe registro público. El administrador inicial se crea directamente en Cloudflare D1 y, desde la sección `Usuarios`, puede generar las demás cuentas autorizadas. Las contraseñas se almacenan mediante PBKDF2 con sal aleatoria y las sesiones se gestionan en el servidor.
+
+La integración Microsoft SSO permanece desactivada hasta configurar las variables de Cloudflare. Consulta `MICROSOFT_ENTRA_SETUP.md`. Al activarla, Microsoft autentica la identidad y D1 conserva la autorización por usuario y módulo. El login local puede mantenerse temporalmente solo para administradores mediante `LOCAL_ADMIN_LOGIN_ENABLED=true`.
+
+Aplica antes la migración:
+
+```powershell
+npx wrangler d1 execute portal-jornadas-auth --remote --file migration-entra-sso.sql
+```
 
 ## Persistencia
 

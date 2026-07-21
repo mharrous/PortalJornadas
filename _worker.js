@@ -1,6 +1,8 @@
 const SESSION_COOKIE = "portal_jornadas_session";
 const SESSION_HOURS = 12;
 const PASSWORD_ITERATIONS = 100000;
+const OIDC_STATE_MINUTES = 10;
+const CURRENT_APP_CODE = "portal-jornadas";
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -35,6 +37,15 @@ function fromBase64(value) {
   return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
 }
 
+function toBase64Url(bytes) {
+  return toBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function fromBase64Url(value) {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return fromBase64(normalized);
+}
+
 function randomToken(size = 32) {
   const bytes = crypto.getRandomValues(new Uint8Array(size));
   return toBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
@@ -42,6 +53,114 @@ function randomToken(size = 32) {
 
 async function sha256(value) {
   return toBase64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+}
+
+async function sha256Base64Url(value) {
+  return toBase64Url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+}
+
+function redirect(location, headers = {}) {
+  return new Response(null, { status: 302, headers: { location, "cache-control": "no-store", ...headers } });
+}
+
+function entraConfig(env) {
+  const tenantId = String(env.ENTRA_TENANT_ID || "").trim().toLowerCase();
+  const clientId = String(env.ENTRA_CLIENT_ID || "").trim();
+  const clientSecret = String(env.ENTRA_CLIENT_SECRET || "").trim();
+  const redirectUri = String(env.ENTRA_REDIRECT_URI || "").trim();
+  const postLogoutRedirectUri = String(env.ENTRA_POST_LOGOUT_REDIRECT_URI || "").trim();
+  const configuredAuthority = String(env.ENTRA_AUTHORITY || `https://login.microsoftonline.com/${tenantId}`).trim();
+  const authorityRoot = configuredAuthority.replace(/\/v2\.0\/?$/i, "").replace(/\/$/, "");
+  const enabled = env.ENTRA_ENABLED === "true" && Boolean(tenantId && clientId && clientSecret && redirectUri);
+  return {
+    enabled,
+    tenantId,
+    clientId,
+    clientSecret,
+    redirectUri,
+    postLogoutRedirectUri,
+    authorityRoot,
+    issuer: `${authorityRoot}/v2.0`,
+    metadataUrl: `${authorityRoot}/v2.0/.well-known/openid-configuration`,
+    requiredRole: String(env.ENTRA_REQUIRED_ROLE || "").trim(),
+    localAdminLoginEnabled: !enabled || env.LOCAL_ADMIN_LOGIN_ENABLED === "true",
+  };
+}
+
+function safeReturnTo(value) {
+  const candidate = String(value || "/");
+  if (!candidate.startsWith("/") || candidate.startsWith("//") || candidate.includes("\\") || candidate.startsWith("/api/")) return "/";
+  return candidate;
+}
+
+function sameOriginUrl(value, request) {
+  const requestUrl = new URL(request.url);
+  const candidate = new URL(value || requestUrl.origin, requestUrl.origin);
+  return candidate.origin === requestUrl.origin ? candidate.toString() : requestUrl.origin;
+}
+
+function oauthErrorRedirect(request, code) {
+  const target = new URL("/", request.url);
+  target.searchParams.set("auth_error", code);
+  return redirect(target.toString());
+}
+
+async function createSession(request, env, userId, externalSessionId = null) {
+  const token = randomToken();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + SESSION_HOURS * 60 * 60 * 1000).toISOString();
+  await env.AUTH_DB.batch([
+    env.AUTH_DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now.toISOString()),
+    env.AUTH_DB.prepare(
+      "INSERT INTO sessions (id, token_hash, user_id, expires_at, created_at, user_agent, external_session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).bind(crypto.randomUUID(), await sha256(token), userId, expiresAt, now.toISOString(), request.headers.get("user-agent") || "", externalSessionId),
+    env.AUTH_DB.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").bind(now.toISOString(), userId),
+  ]);
+  return token;
+}
+
+async function oidcMetadata(config) {
+  const response = await fetch(config.metadataUrl, { headers: { accept: "application/json" } });
+  if (!response.ok) throw new Error("No se pudo consultar Microsoft Entra");
+  const metadata = await response.json();
+  const endpoints = [metadata.authorization_endpoint, metadata.token_endpoint, metadata.jwks_uri, metadata.issuer];
+  if (endpoints.some((value) => typeof value !== "string" || !value.startsWith("https://"))) throw new Error("Metadatos OIDC no válidos");
+  if (metadata.issuer !== config.issuer) throw new Error("Emisor OIDC inesperado");
+  return metadata;
+}
+
+function decodeJwtPart(value) {
+  return JSON.parse(new TextDecoder().decode(fromBase64Url(value)));
+}
+
+async function validateIdToken(idToken, expectedNonce, config, metadata) {
+  const parts = String(idToken || "").split(".");
+  if (parts.length !== 3) throw new Error("Token de identidad no válido");
+  const header = decodeJwtPart(parts[0]);
+  const claims = decodeJwtPart(parts[1]);
+  if (header.alg !== "RS256" || !header.kid) throw new Error("Firma de token no permitida");
+  const jwksResponse = await fetch(metadata.jwks_uri, { headers: { accept: "application/json" } });
+  if (!jwksResponse.ok) throw new Error("No se pudieron obtener las claves de Microsoft");
+  const jwks = await jwksResponse.json();
+  const jwk = Array.isArray(jwks.keys) ? jwks.keys.find((item) => item.kid === header.kid && item.kty === "RSA") : null;
+  if (!jwk) throw new Error("Clave de firma no encontrada");
+  const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+  const validSignature = await crypto.subtle.verify(
+    { name: "RSASSA-PKCS1-v1_5" },
+    key,
+    fromBase64Url(parts[2]),
+    new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
+  );
+  if (!validSignature) throw new Error("Firma de token no válida");
+  const now = Math.floor(Date.now() / 1000);
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!audiences.includes(config.clientId)) throw new Error("Audiencia no válida");
+  if (claims.iss !== metadata.issuer || String(claims.tid || "").toLowerCase() !== config.tenantId) throw new Error("Tenant no autorizado");
+  if (!claims.exp || claims.exp < now - 60 || (claims.nbf && claims.nbf > now + 60)) throw new Error("Token caducado o aún no válido");
+  if (!claims.nonce || !equalSecret(String(claims.nonce), String(expectedNonce))) throw new Error("Nonce no válido");
+  if (!claims.oid) throw new Error("Identificador de usuario no disponible");
+  if (config.requiredRole && (!Array.isArray(claims.roles) || !claims.roles.includes(config.requiredRole))) throw new Error("Rol de aplicación no autorizado");
+  return claims;
 }
 
 async function passwordHash(password, saltBase64) {
@@ -80,7 +199,7 @@ async function currentSession(request, env) {
   if (!token) return null;
   const tokenHash = await sha256(token);
   const session = await env.AUTH_DB.prepare(
-    `SELECT sessions.id AS session_id, users.id, users.username, users.display_name, users.role, users.modules
+    `SELECT sessions.id AS session_id, sessions.external_session_id, users.id, users.username, users.display_name, users.email, users.role, users.modules, users.auth_provider
      FROM sessions JOIN users ON users.id = sessions.user_id
      WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.active = 1`,
   )
@@ -94,7 +213,9 @@ function publicUser(user) {
     id: user.id,
     username: user.username,
     displayName: user.display_name,
+    email: user.email || "",
     role: user.role,
+    authProvider: user.auth_provider || "local",
     modules: user.role === "admin" ? ["jornadas", "podcast"] : parseModules(user.modules),
   };
 }
@@ -119,28 +240,132 @@ async function requireModule(request, env, module) {
   return access;
 }
 
+async function microsoftStart(request, env) {
+  const config = entraConfig(env);
+  if (!config.enabled) return json({ error: "Microsoft Entra no está configurado" }, 503);
+  const existingSession = await currentSession(request, env);
+  const requestUrl = new URL(request.url);
+  const returnTo = safeReturnTo(requestUrl.searchParams.get("returnTo"));
+  if (existingSession) return redirect(new URL(returnTo, requestUrl.origin).toString());
+
+  const metadata = await oidcMetadata(config);
+  const state = randomToken(32);
+  const nonce = randomToken(32);
+  const codeVerifier = randomToken(64);
+  const codeChallenge = await sha256Base64Url(codeVerifier);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + OIDC_STATE_MINUTES * 60 * 1000).toISOString();
+  await env.AUTH_DB.batch([
+    env.AUTH_DB.prepare("DELETE FROM oidc_states WHERE expires_at <= ?").bind(now.toISOString()),
+    env.AUTH_DB.prepare("INSERT INTO oidc_states (state_hash, code_verifier, nonce, return_to, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(await sha256(state), codeVerifier, nonce, returnTo, expiresAt, now.toISOString()),
+  ]);
+  const authorizeUrl = new URL(metadata.authorization_endpoint);
+  authorizeUrl.searchParams.set("client_id", config.clientId);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("redirect_uri", config.redirectUri);
+  authorizeUrl.searchParams.set("response_mode", "form_post");
+  authorizeUrl.searchParams.set("scope", "openid profile email");
+  authorizeUrl.searchParams.set("state", state);
+  authorizeUrl.searchParams.set("nonce", nonce);
+  authorizeUrl.searchParams.set("code_challenge", codeChallenge);
+  authorizeUrl.searchParams.set("code_challenge_method", "S256");
+  return redirect(authorizeUrl.toString());
+}
+
+async function microsoftCallback(request, env) {
+  const config = entraConfig(env);
+  if (!config.enabled) return oauthErrorRedirect(request, "sso_not_configured");
+  const form = await request.formData();
+  const state = String(form.get("state") || "");
+  if (!state) return oauthErrorRedirect(request, "invalid_state");
+  const stateHash = await sha256(state);
+  const savedState = await env.AUTH_DB.prepare(
+    "SELECT state_hash, code_verifier, nonce, return_to, expires_at FROM oidc_states WHERE state_hash = ?",
+  ).bind(stateHash).first();
+  await env.AUTH_DB.prepare("DELETE FROM oidc_states WHERE state_hash = ?").bind(stateHash).run();
+  if (!savedState || savedState.expires_at <= new Date().toISOString()) return oauthErrorRedirect(request, "invalid_state");
+  if (form.get("error")) return oauthErrorRedirect(request, "microsoft_error");
+  const code = String(form.get("code") || "");
+  if (!code) return oauthErrorRedirect(request, "missing_code");
+
+  try {
+    const metadata = await oidcMetadata(config);
+    const tokenResponse = await fetch(metadata.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: config.redirectUri,
+        code_verifier: savedState.code_verifier,
+        scope: "openid profile email",
+      }),
+    });
+    const tokenData = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokenData.id_token) throw new Error("Microsoft no devolvió un token válido");
+    const claims = await validateIdToken(tokenData.id_token, savedState.nonce, config, metadata);
+    const claimedEmail = [claims.email, claims.preferred_username]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .find((value) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value));
+    let user = await env.AUTH_DB.prepare(
+      "SELECT id, username, display_name, email, role, modules, active, auth_provider, entra_oid, entra_tenant_id FROM users WHERE entra_tenant_id = ? AND entra_oid = ?",
+    ).bind(config.tenantId, String(claims.oid)).first();
+    if (!user && claimedEmail) {
+      user = await env.AUTH_DB.prepare(
+        "SELECT id, username, display_name, email, role, modules, active, auth_provider, entra_oid, entra_tenant_id FROM users WHERE email = ? COLLATE NOCASE",
+      ).bind(claimedEmail).first();
+      if (user && user.entra_oid && (user.entra_oid !== claims.oid || user.entra_tenant_id !== config.tenantId)) {
+        return oauthErrorRedirect(request, "identity_mismatch");
+      }
+      if (user) {
+        await env.AUTH_DB.prepare(
+          "UPDATE users SET entra_oid = ?, entra_tenant_id = ?, auth_provider = 'entra' WHERE id = ?",
+        ).bind(String(claims.oid), config.tenantId, user.id).run();
+        user.entra_oid = String(claims.oid);
+        user.entra_tenant_id = config.tenantId;
+        user.auth_provider = "entra";
+      }
+    }
+    if (!user || !user.active || (!parseModules(user.modules).length && user.role !== "admin")) return oauthErrorRedirect(request, "access_denied");
+    const token = await createSession(request, env, user.id, claims.sid ? String(claims.sid) : null);
+    const target = new URL(safeReturnTo(savedState.return_to), new URL(request.url).origin).toString();
+    return redirect(target, { "set-cookie": sessionCookie(token, SESSION_HOURS * 60 * 60) });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "entra_callback_failed", app: CURRENT_APP_CODE, message: error.message }));
+    return oauthErrorRedirect(request, "validation_failed");
+  }
+}
+
+async function microsoftFrontChannelLogout(request, env) {
+  const config = entraConfig(env);
+  const url = new URL(request.url);
+  const sid = String(url.searchParams.get("sid") || "");
+  const issuer = String(url.searchParams.get("iss") || "");
+  if (config.enabled && sid && issuer === config.issuer) {
+    await env.AUTH_DB.prepare("DELETE FROM sessions WHERE external_session_id = ?").bind(sid).run();
+  }
+  return new Response(null, { status: 200, headers: { "set-cookie": sessionCookie("", 0), "cache-control": "no-store" } });
+}
+
 async function login(request, env) {
+  const config = entraConfig(env);
   const body = await requestBody(request);
   const username = String(body.username || "").trim();
   const password = String(body.password || "");
   const user = await env.AUTH_DB.prepare(
-    "SELECT id, username, display_name, role, modules, password_hash, password_salt FROM users WHERE username = ? COLLATE NOCASE AND active = 1",
+    "SELECT id, username, display_name, email, role, modules, auth_provider, password_hash, password_salt FROM users WHERE username = ? COLLATE NOCASE AND active = 1",
   )
     .bind(username)
     .first();
   if (!user) return json({ error: "Usuario o contraseña incorrectos" }, 401);
+  if (config.enabled && (!config.localAdminLoginEnabled || user.role !== "admin")) return json({ error: "Utiliza el acceso corporativo de Microsoft" }, 403);
   const calculatedHash = await passwordHash(password, user.password_salt);
   if (!equalSecret(calculatedHash, user.password_hash)) return json({ error: "Usuario o contraseña incorrectos" }, 401);
 
-  const token = randomToken();
-  const expiresAt = new Date(Date.now() + SESSION_HOURS * 60 * 60 * 1000).toISOString();
-  await env.AUTH_DB.batch([
-    env.AUTH_DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(new Date().toISOString()),
-    env.AUTH_DB.prepare(
-      "INSERT INTO sessions (id, token_hash, user_id, expires_at, created_at, user_agent) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(crypto.randomUUID(), await sha256(token), user.id, expiresAt, new Date().toISOString(), request.headers.get("user-agent") || ""),
-    env.AUTH_DB.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").bind(new Date().toISOString(), user.id),
-  ]);
+  const token = await createSession(request, env, user.id);
   return json(
     { user: publicUser(user) },
     200,
@@ -149,16 +374,24 @@ async function login(request, env) {
 }
 
 async function logout(request, env) {
+  const session = await currentSession(request, env);
   const token = parseCookies(request)[SESSION_COOKIE];
   if (token) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
-  return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
+  const config = entraConfig(env);
+  let logoutUrl = "";
+  if (session?.auth_provider === "entra" && config.enabled) {
+    const endpoint = new URL(`${config.authorityRoot}/oauth2/v2.0/logout`);
+    endpoint.searchParams.set("post_logout_redirect_uri", sameOriginUrl(config.postLogoutRedirectUri, request));
+    logoutUrl = endpoint.toString();
+  }
+  return json({ ok: true, logoutUrl }, 200, { "set-cookie": sessionCookie("", 0) });
 }
 
 async function listUsers(request, env) {
   const access = await requireUser(request, env, "admin");
   if (access.error) return access.error;
   const result = await env.AUTH_DB.prepare(
-    "SELECT id, username, display_name, role, modules, active, created_at, last_login_at FROM users ORDER BY active DESC, display_name COLLATE NOCASE",
+    "SELECT id, username, display_name, email, role, modules, auth_provider, entra_oid, entra_tenant_id, active, created_at, last_login_at FROM users ORDER BY active DESC, display_name COLLATE NOCASE",
   ).all();
   return json({ users: result.results });
 }
@@ -166,12 +399,19 @@ async function listUsers(request, env) {
 function validateUserInput(body, requirePassword = true) {
   const username = String(body.username || "").trim();
   const displayName = String(body.displayName || "").trim();
+  const email = normalizeEmail(body.email);
   const password = String(body.password || "");
   const access = accessProfile(body);
   if (!/^[a-zA-Z0-9._-]{3,50}$/.test(username)) return { error: "El usuario debe tener entre 3 y 50 caracteres válidos" };
   if (displayName.length < 2 || displayName.length > 80) return { error: "Indica un nombre visible válido" };
+  if (body.email && !email) return { error: "Indica un correo corporativo válido" };
   if (requirePassword && password.length < 10) return { error: "La contraseña debe tener al menos 10 caracteres" };
-  return { username, displayName, password, ...access };
+  return { username, displayName, email, password, ...access };
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? email : "";
 }
 
 function accessProfile(body) {
@@ -194,13 +434,14 @@ async function createUser(request, env) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   try {
     await env.AUTH_DB.prepare(
-      `INSERT INTO users (id, username, display_name, role, modules, password_hash, password_salt, active, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO users (id, username, display_name, email, role, modules, auth_provider, password_hash, password_salt, active, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?, 1, ?, ?)`,
     )
       .bind(
         crypto.randomUUID(),
         input.username,
         input.displayName,
+        input.email || null,
         input.role,
         input.modules,
         await passwordHash(input.password, toBase64(salt)),
@@ -211,7 +452,7 @@ async function createUser(request, env) {
       .run();
     return json({ ok: true }, 201);
   } catch (error) {
-    return json({ error: "Ese nombre de usuario ya existe" }, 409);
+    return json({ error: "Ese usuario o correo corporativo ya existe" }, 409);
   }
 }
 
@@ -219,7 +460,7 @@ async function updateUser(request, env, userId) {
   const access = await requireUser(request, env, "admin");
   if (access.error) return access.error;
   const body = await requestBody(request);
-  const target = await env.AUTH_DB.prepare("SELECT id, role, modules, active FROM users WHERE id = ?").bind(userId).first();
+  const target = await env.AUTH_DB.prepare("SELECT id, email, role, modules, active, entra_oid FROM users WHERE id = ?").bind(userId).first();
   if (!target) return json({ error: "Usuario no encontrado" }, 404);
   if (userId === access.session.id && (body.active === false || (body.accessProfile && body.accessProfile !== "admin") || (body.role && body.role !== "admin"))) {
     return json({ error: "No puedes retirar tus propios permisos" }, 400);
@@ -244,12 +485,21 @@ async function updateUser(request, env, userId) {
   const modules = requestedAccess.modules;
   const accessChanged = role !== target.role || modules !== target.modules;
   const active = typeof body.active === "boolean" ? Number(body.active) : target.active;
+  const email = Object.prototype.hasOwnProperty.call(body, "email") ? normalizeEmail(body.email) : target.email;
+  if (Object.prototype.hasOwnProperty.call(body, "email") && body.email && !email) return json({ error: "Indica un correo corporativo válido" }, 400);
   if (target.role === "admin" && (role !== "admin" || !active)) {
     const adminCount = await env.AUTH_DB.prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND active = 1").first();
     if (Number(adminCount.total) <= 1) return json({ error: "Debe existir al menos un administrador activo" }, 400);
   }
-  await env.AUTH_DB.prepare("UPDATE users SET role = ?, modules = ?, active = ? WHERE id = ?").bind(role, modules, active, userId).run();
-  if (!active || accessChanged) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
+  try {
+    await env.AUTH_DB.prepare("UPDATE users SET role = ?, modules = ?, email = ?, active = ? WHERE id = ?").bind(role, modules, email || null, active, userId).run();
+  } catch (error) {
+    return json({ error: "Ese correo corporativo ya pertenece a otro usuario" }, 409);
+  }
+  if (body.resetEntraLink === true) {
+    await env.AUTH_DB.prepare("UPDATE users SET entra_oid = NULL, entra_tenant_id = NULL, auth_provider = 'local' WHERE id = ?").bind(userId).run();
+  }
+  if (!active || accessChanged || body.resetEntraLink === true) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
   return json({ ok: true });
 }
 
@@ -398,8 +648,15 @@ async function deletePodcastSchedule(request, env, scheduleId) {
 
 async function handleApi(request, env) {
   if (!env.AUTH_DB) return json({ error: "La base de datos de acceso no está configurada" }, 503);
-  if (["POST", "PATCH", "DELETE"].includes(request.method) && !assertSameOrigin(request)) return json({ error: "Origen no permitido" }, 403);
   const url = new URL(request.url);
+  if (url.pathname === "/api/auth/microsoft/callback" && request.method === "POST") return microsoftCallback(request, env);
+  if (["POST", "PATCH", "DELETE"].includes(request.method) && !assertSameOrigin(request)) return json({ error: "Origen no permitido" }, 403);
+  if (url.pathname === "/api/auth/config" && request.method === "GET") {
+    const config = entraConfig(env);
+    return json({ microsoftEnabled: config.enabled, localAdminLoginEnabled: config.localAdminLoginEnabled });
+  }
+  if (url.pathname === "/api/auth/microsoft/start" && request.method === "GET") return microsoftStart(request, env);
+  if (url.pathname === "/api/auth/microsoft/front-channel-logout" && request.method === "GET") return microsoftFrontChannelLogout(request, env);
   if (url.pathname === "/api/auth/login" && request.method === "POST") return login(request, env);
   if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout(request, env);
   if (url.pathname === "/api/auth/session" && request.method === "GET") {

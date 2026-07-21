@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "portal-jornadas",
+  "pages_build_output_dir": ".",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "portal-jornadas-auth",
+      "database_id": "615aa0b9-320e-4cca-87f8-9ec9801816bb"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

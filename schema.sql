@@ -6,6 +6,10 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'user')) DEFAULT 'user',
   modules TEXT NOT NULL DEFAULT 'jornadas',
+  email TEXT COLLATE NOCASE,
+  entra_oid TEXT,
+  entra_tenant_id TEXT,
+  auth_provider TEXT NOT NULL CHECK (auth_provider IN ('local', 'entra')) DEFAULT 'local',
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,
   active INTEGER NOT NULL CHECK (active IN (0, 1)) DEFAULT 1,
@@ -22,12 +26,27 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   user_agent TEXT NOT NULL DEFAULT '',
+  external_session_id TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_external_session_id ON sessions(external_session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE) WHERE email IS NOT NULL AND email <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_entra_identity ON users(entra_tenant_id, entra_oid) WHERE entra_tenant_id IS NOT NULL AND entra_oid IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS oidc_states (
+  state_hash TEXT PRIMARY KEY,
+  code_verifier TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  return_to TEXT NOT NULL DEFAULT '/',
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_oidc_states_expires_at ON oidc_states(expires_at);
 
 CREATE TABLE IF NOT EXISTS podcast_episodes (
   id TEXT PRIMARY KEY,

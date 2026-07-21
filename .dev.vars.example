@@ -1,0 +1,9 @@
+ENTRA_ENABLED=true
+ENTRA_CLIENT_ID=
+ENTRA_TENANT_ID=
+ENTRA_AUTHORITY=https://login.microsoftonline.com/TENANT_ID
+ENTRA_REDIRECT_URI=http://localhost:8788/api/auth/microsoft/callback
+ENTRA_POST_LOGOUT_REDIRECT_URI=http://localhost:8788/?signed_out=1
+ENTRA_REQUIRED_ROLE=PortalJornadas.Access
+LOCAL_ADMIN_LOGIN_ENABLED=true
+ENTRA_CLIENT_SECRET=

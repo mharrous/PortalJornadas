@@ -40,6 +40,7 @@
   let modalPendingFiles = new Map();
   let modalRemovedInvoiceIds = new Set();
   let currentUser = null;
+  let authConfiguration = { microsoftEnabled: false, localAdminLoginEnabled: true };
   let usersCache = [];
   let usersLoading = false;
   let podcastEpisodes = [];
@@ -1492,12 +1493,13 @@
       </div>
       <div class="table-card users-card">
         <table class="data-table users-table">
-          <thead><tr><th>Usuario</th><th>Nombre</th><th>Perfil de acceso</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead>
+          <thead><tr><th>Usuario</th><th>Nombre y correo</th><th>Identidad</th><th>Perfil de acceso</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead>
           <tbody>
             ${usersCache.length ? usersCache.map((user) => `
               <tr>
                 <td><strong>${escapeHtml(user.username)}</strong>${user.id === currentUser.id ? `<small class="current-user-label">Tu cuenta</small>` : ""}</td>
-                <td>${escapeHtml(user.display_name)}</td>
+                <td><strong>${escapeHtml(user.display_name)}</strong><small>${escapeHtml(user.email || "Sin correo Microsoft")}</small></td>
+                <td><span class="status-badge ${user.entra_oid ? "success" : "neutral"}">${user.entra_oid ? "Microsoft vinculado" : "Pendiente"}</span></td>
                 <td><span class="status-badge ${user.role === "admin" ? "warning" : "info"}">${userAccessLabel(user)}</span></td>
                 <td><span class="status-badge ${user.active ? "success" : "neutral"}">${user.active ? "Activo" : "Desactivado"}</span></td>
                 <td>${user.last_login_at ? new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date(user.last_login_at)) : "Nunca"}</td>
@@ -1506,7 +1508,7 @@
                   <button class="secondary-button compact-button" data-reset-user="${user.id}">Contraseña</button>
                   ${user.id !== currentUser.id ? `<button class="secondary-button compact-button" data-toggle-user="${user.id}" data-active="${Boolean(user.active)}">${user.active ? "Desactivar" : "Activar"}</button><button class="danger-text-button" data-delete-user="${user.id}">Eliminar</button>` : ""}
                 </div></td>
-              </tr>`).join("") : `<tr><td colspan="6"><div class="empty-state"><strong>Cargando usuarios…</strong></div></td></tr>`}
+              </tr>`).join("") : `<tr><td colspan="7"><div class="empty-state"><strong>Cargando usuarios…</strong></div></td></tr>`}
           </tbody>
         </table>
       </div>`;
@@ -1532,10 +1534,11 @@
         <div class="form-grid">
           <label class="field"><span>Usuario</span><input name="username" minlength="3" maxlength="50" pattern="[A-Za-z0-9._-]+" autocomplete="off" required /></label>
           <label class="field"><span>Nombre visible</span><input name="displayName" minlength="2" maxlength="80" required /></label>
+          <label class="field span-2"><span>Correo corporativo Microsoft</span><input name="email" type="email" autocomplete="off" placeholder="usuario@camaradeceuta.es" /></label>
           <label class="field"><span>Perfil de acceso</span><select name="accessProfile"><option value="jornadas">Solo Jornadas</option><option value="podcast">Solo Podcast</option><option value="both">Jornadas + Podcast</option><option value="admin">Administrador</option></select></label>
           <label class="field"><span>Contraseña inicial</span><input name="password" type="password" minlength="10" autocomplete="new-password" required /></label>
         </div>
-        <p class="form-help">Entrega la contraseña al usuario por un canal seguro. No se mostrará de nuevo.</p>
+        <p class="form-help">El correo permite vincular Microsoft en el primer acceso. La contraseña queda como recuperación local mientras el SSO no esté activado.</p>
         <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Crear usuario</button></footer>
       </form>`);
     document.querySelector("#cancelModal").addEventListener("click", closeModal);
@@ -1568,17 +1571,31 @@
             ["admin", "Administrador · acceso total"],
           ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("")}
         </select></label>
-        <p class="form-help">Un usuario con “Solo Podcast” verá únicamente la categoría Podcast al iniciar sesión.</p>
-        <footer class="modal-actions"><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar permisos</button></footer>
+        <label class="field"><span>Correo corporativo Microsoft</span><input name="email" type="email" value="${escapeHtml(user.email || "")}" placeholder="usuario@camaradeceuta.es" /></label>
+        <p class="form-help">El correo debe coincidir exactamente con la cuenta corporativa. Los permisos siguen controlándose desde esta aplicación.</p>
+        <footer class="modal-actions">${user.entra_oid ? '<button class="danger-text-button" type="button" id="resetEntraLink">Desvincular Microsoft</button>' : "<span></span>"}<div><button class="secondary-button" type="button" id="cancelModal">Cancelar</button><button class="primary-button" type="submit">Guardar permisos</button></div></footer>
       </form>`);
     document.querySelector("#cancelModal").addEventListener("click", closeModal);
     document.querySelector("#userAccessForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const accessProfile = String(new FormData(event.currentTarget).get("accessProfile") || "jornadas");
+      const formData = new FormData(event.currentTarget);
+      const accessProfile = String(formData.get("accessProfile") || "jornadas");
+      const email = String(formData.get("email") || "");
       try {
-        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ accessProfile }) });
+        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ accessProfile, email }) });
         closeModal();
         showToast("Permisos actualizados");
+        await loadUsers();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    document.querySelector("#resetEntraLink")?.addEventListener("click", async () => {
+      if (!window.confirm("¿Desvincular esta cuenta de Microsoft? Sus sesiones abiertas se cerrarán.")) return;
+      try {
+        await apiRequest(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify({ resetEntraLink: true }) });
+        closeModal();
+        showToast("Cuenta de Microsoft desvinculada");
         await loadUsers();
       } catch (error) {
         showToast(error.message);
@@ -1638,20 +1655,57 @@
     element.className = `auth-message ${type}`;
   }
 
-  function renderAuth() {
+  function microsoftLogin() {
+    window.location.assign("/api/auth/microsoft/start?returnTo=%2F");
+  }
+
+  function renderAuth(options = {}) {
+    const showLocalForm = !authConfiguration.microsoftEnabled || authConfiguration.localAdminLoginEnabled;
+    const microsoftButton = authConfiguration.microsoftEnabled
+      ? `<button class="microsoft-button" type="button" id="microsoftLogin"><span aria-hidden="true">▦</span> Entrar con Microsoft</button>${showLocalForm ? '<div class="auth-divider"><span>Acceso administrativo local</span></div>' : ""}`
+      : "";
+    const localForm = showLocalForm ? `
+      <form class="auth-form" id="loginForm">
+        <label class="field"><span>Usuario</span><input name="username" autocomplete="username" required autofocus /></label>
+        <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="current-password" required /></label>
+        <p class="auth-message" id="authMessage"></p>
+        <button class="primary-button auth-submit" type="submit">Entrar</button>
+      </form>` : "";
     authContent.innerHTML = `
       <div class="auth-intro">
         <span class="auth-kicker">Acceso restringido</span>
         <h2>Acceso autorizado</h2>
-        <p>Introduce las credenciales proporcionadas por el administrador.</p>
+        <p>${options.signedOut ? "La sesión se ha cerrado correctamente." : authConfiguration.microsoftEnabled ? "Utiliza tu cuenta corporativa de Microsoft." : "Introduce las credenciales proporcionadas por el administrador."}</p>
       </div>
-      <form class="auth-form" id="loginForm">
-        <label class="field"><span>Usuario</span><input name="username" autocomplete="username" required autofocus /></label>
-        <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="current-password" required autofocus /></label>
-        <p class="auth-message" id="authMessage"></p>
-        <button class="primary-button auth-submit" type="submit">Entrar</button>
-      </form>`;
-    document.querySelector("#loginForm").addEventListener("submit", login);
+      ${microsoftButton}
+      ${localForm}`;
+    document.querySelector("#microsoftLogin")?.addEventListener("click", microsoftLogin);
+    document.querySelector("#loginForm")?.addEventListener("submit", login);
+  }
+
+  function renderAuthError(code) {
+    const messages = {
+      access_denied: ["Acceso no autorizado", "Tu cuenta de Microsoft es válida, pero no tiene permiso para esta aplicación."],
+      identity_mismatch: ["Cuenta ya vinculada", "Este correo corporativo está vinculado a otra identidad de Microsoft. Contacta con un administrador."],
+      microsoft_error: ["Microsoft no completó el acceso", "Se canceló el inicio de sesión o Microsoft devolvió un error."],
+      invalid_state: ["La solicitud ha caducado", "Vuelve a iniciar el acceso para generar una solicitud segura."],
+      validation_failed: ["No se pudo validar la identidad", "El token recibido no superó las comprobaciones de seguridad."],
+      sso_not_configured: ["SSO no disponible", "La configuración de Microsoft Entra todavía no está activa."],
+    };
+    const [title, message] = messages[code] || ["No se pudo iniciar sesión", "Vuelve a intentarlo o contacta con un administrador."];
+    authContent.innerHTML = `
+      <div class="auth-intro auth-error-panel">
+        <span class="auth-kicker">Acceso protegido</span>
+        <h2>${escapeHtml(title)}</h2>
+        <p>${escapeHtml(message)}</p>
+      </div>
+      ${authConfiguration.microsoftEnabled ? '<button class="microsoft-button" type="button" id="microsoftLogin"><span aria-hidden="true">▦</span> Volver a Microsoft</button>' : ""}
+      ${authConfiguration.localAdminLoginEnabled ? '<a class="admin-recovery-link" href="/?local_admin=1">Acceso de recuperación para administradores</a>' : ""}`;
+    document.querySelector("#microsoftLogin")?.addEventListener("click", microsoftLogin);
+  }
+
+  function renderAuthRedirect() {
+    authContent.innerHTML = '<div class="auth-intro auth-loading"><span class="auth-kicker">Inicio de sesión único</span><h2>Conectando con Microsoft…</h2><p>Estamos comprobando tu sesión corporativa de forma segura.</p><span class="auth-spinner" aria-hidden="true"></span></div>';
   }
 
   async function login(event) {
@@ -1682,7 +1736,7 @@
   }
 
   async function logout() {
-    await apiRequest("/api/auth/logout", { method: "POST" }).catch(() => null);
+    const result = await apiRequest("/api/auth/logout", { method: "POST" }).catch(() => null);
     currentUser = null;
     usersCache = [];
     podcastEpisodes = [];
@@ -1691,7 +1745,11 @@
     currentView = "dashboard";
     appShell.hidden = true;
     authGate.hidden = false;
-    renderAuth();
+    if (result?.logoutUrl) {
+      window.location.assign(result.logoutUrl);
+      return;
+    }
+    renderAuth({ signedOut: true });
   }
 
   function applyTheme(themeId) {
@@ -1736,10 +1794,26 @@
 
   async function initAuth() {
     applyTheme(state.settings.theme);
+    authConfiguration = await apiRequest("/api/auth/config").catch(() => ({ microsoftEnabled: false, localAdminLoginEnabled: true }));
     try {
       const data = await apiRequest("/api/auth/session");
       unlockApp(data.user);
     } catch (error) {
+      const params = new URLSearchParams(window.location.search);
+      const authError = params.get("auth_error");
+      if (authError) {
+        renderAuthError(authError);
+        return;
+      }
+      if (params.get("signed_out") === "1") {
+        renderAuth({ signedOut: true });
+        return;
+      }
+      if (authConfiguration.microsoftEnabled && (params.get("local_admin") !== "1" || !authConfiguration.localAdminLoginEnabled)) {
+        renderAuthRedirect();
+        window.setTimeout(microsoftLogin, 150);
+        return;
+      }
       renderAuth();
     }
   }

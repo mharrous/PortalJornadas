@@ -407,10 +407,20 @@ tbody tr:hover { background: linear-gradient(90deg, #fff8e8, #ffecc1); }
 .auth-submit { width: 100%; margin-top: 4px; }
 .auth-message { min-height: 18px; margin: 0; color: #a61f2e; font-size: 12px; font-weight: 700; }
 .auth-message.info { color: #865519; }
+.microsoft-button { display: flex; width: 100%; min-height: 46px; align-items: center; justify-content: center; gap: 10px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: linear-gradient(180deg, #fff, #f4f0e8); font: inherit; font-weight: 800; cursor: pointer; box-shadow: 0 6px 16px rgba(50,35,28,.07); }
+.microsoft-button span { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 5px; color: #fff; background: linear-gradient(135deg, #1976d2, #0b4d9b); font-size: 13px; }
+.auth-divider { display: flex; align-items: center; gap: 10px; margin: 20px 0 16px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, var(--line)); }
+.auth-divider::after { background: linear-gradient(90deg, var(--line), transparent); }
+.auth-error-panel h2 { color: #9a1d2c; }
+.admin-recovery-link { display: block; margin-top: 18px; color: var(--muted); font-size: 11px; text-align: center; }
+.auth-loading { text-align: center; }
+.auth-spinner { display: block; width: 30px; height: 30px; margin: 24px auto 0; border: 3px solid #eadfce; border-top-color: #a92332; border-radius: 50%; animation: auth-spin .8s linear infinite; }
+@keyframes auth-spin { to { transform: rotate(360deg); } }
 
 .section-copy { margin: 6px 0 0; color: var(--muted); }
 .users-card { overflow-x: auto; }
-.users-table { min-width: 850px; }
+.users-table { min-width: 1050px; }
 .users-table td { vertical-align: middle; }
 .users-table td:first-child strong,
 .current-user-label { display: block; }
