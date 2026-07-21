@@ -1,4 +1,4 @@
-# OAP 2026 · Gestión de Jornadas
+# OAP AceleraPyme
 
 Aplicación web independiente para gestionar las jornadas de la Oficina Acelera Pyme. El proyecto no modifica ni sincroniza el Excel original.
 
