@@ -8,6 +8,7 @@
   const viewTitles = {
     dashboard: "Resumen anual",
     events: "Gestión de jornadas",
+    calendar: "Calendario",
     budget: "Control presupuestario",
     contacts: "Agenda de contactos",
     data: "Datos y copias de seguridad",
@@ -237,6 +238,7 @@
     const renderers = {
       dashboard: renderDashboard,
       events: renderEvents,
+      calendar: renderCalendar,
       budget: renderBudget,
       contacts: renderContacts,
       data: renderData,
@@ -354,6 +356,20 @@
 
   function emptyState(message) {
     return `<div class="empty-state"><span>○</span><p>${message}</p></div>`;
+  }
+
+  function renderCalendar() {
+    return `
+      <section class="calendar-panel" aria-label="Calendario integrado">
+        <iframe
+          class="calendar-frame"
+          src="https://calendario.camaradeceuta.workers.dev/"
+          title="Calendario de la Cámara de Comercio de Ceuta"
+          loading="eager"
+          referrerpolicy="strict-origin-when-cross-origin"
+        ></iframe>
+      </section>
+    `;
   }
 
   function renderEvents() {

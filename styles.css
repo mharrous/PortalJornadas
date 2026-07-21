@@ -100,6 +100,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .nav-item:hover { color: #fff; background: linear-gradient(90deg, rgba(255,214,95,.14), rgba(255,255,255,.04)); }
 .nav-item.active { color: #fff; background: linear-gradient(100deg, rgba(255,210,77,.28), rgba(255,255,255,.08)); box-shadow: inset 3px 0 #ffd35e; }
 
+.calendar-panel {
+  overflow: hidden;
+  min-height: calc(100vh - 140px);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, .96), rgba(255, 248, 232, .9));
+  box-shadow: var(--shadow);
+}
+
+.calendar-frame {
+  display: block;
+  width: 100%;
+  min-height: calc(100vh - 142px);
+  border: 0;
+  background: transparent;
+}
+
 .sidebar-note {
   display: flex;
   align-items: flex-start;
