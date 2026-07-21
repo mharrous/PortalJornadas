@@ -1,5 +1,5 @@
 const SESSION_COOKIE = "portal_jornadas_session";
-const SESSION_HOURS = 12;
+const SESSION_HOURS = 180 * 24;
 const PASSWORD_ITERATIONS = 100000;
 const OIDC_STATE_MINUTES = 10;
 const CURRENT_APP_CODE = "gestion-jornadas";
