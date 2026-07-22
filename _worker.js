@@ -576,14 +576,29 @@ async function deleteUser(request, env, userId) {
   const access = await requireUser(request, env, "admin");
   if (access.error) return access.error;
   if (userId === access.session.id) return json({ error: "No puedes eliminar tu propio usuario" }, 400);
-  const target = await env.AUTH_DB.prepare("SELECT role, active FROM users WHERE id = ?").bind(userId).first();
+  const target = await env.AUTH_DB.prepare("SELECT role, active, email FROM users WHERE id = ?").bind(userId).first();
   if (!target) return json({ error: "Usuario no encontrado" }, 404);
   if (target.role === "admin" && target.active) {
     const adminCount = await env.AUTH_DB.prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND active = 1").first();
     if (Number(adminCount.total) <= 1) return json({ error: "Debe existir al menos un administrador activo" }, 400);
   }
+  let centralAccessRemoved = false;
+  if (target.email && env.PORTAL_AUTH_DB) {
+    const centralUser = await env.PORTAL_AUTH_DB.prepare(
+      "SELECT id, role FROM users WHERE email = ? COLLATE NOCASE",
+    ).bind(target.email).first();
+    if (centralUser?.role === "admin") {
+      return json({ error: "Los administradores generales deben eliminarse desde el portal central" }, 400);
+    }
+    if (centralUser) {
+      await env.PORTAL_AUTH_DB.prepare(
+        "DELETE FROM user_application_permissions WHERE user_id = ? AND application_code = ?",
+      ).bind(centralUser.id, CURRENT_APP_CODE).run();
+      centralAccessRemoved = true;
+    }
+  }
   await env.AUTH_DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
-  return json({ ok: true });
+  return json({ ok: true, centralAccessRemoved });
 }
 
 function podcastText(value, maxLength = 200) {
@@ -741,6 +756,7 @@ async function handleApi(request, env) {
   if (podcastScheduleMatch && request.method === "DELETE") return deletePodcastSchedule(request, env, podcastScheduleMatch[1]);
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && request.method === "PATCH") return updateUser(request, env, userMatch[1]);
+  if (userMatch && request.method === "DELETE") return deleteUser(request, env, userMatch[1]);
   return json({ error: "Ruta no encontrada" }, 404);
 }
 

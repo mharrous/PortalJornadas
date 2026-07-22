@@ -834,6 +834,7 @@
     appView.querySelectorAll("[data-edit-podcast-episode]").forEach((button) => button.addEventListener("click", () => openPodcastEpisodeModal(button.dataset.editPodcastEpisode)));
     appView.querySelectorAll("[data-edit-podcast-schedule]").forEach((button) => button.addEventListener("click", () => openPodcastScheduleModal(button.dataset.editPodcastSchedule)));
     appView.querySelectorAll("[data-access-user]").forEach((button) => button.addEventListener("click", () => openUserAccessModal(button.dataset.accessUser)));
+    appView.querySelectorAll("[data-delete-user]").forEach((button) => button.addEventListener("click", () => removeUser(button.dataset.deleteUser)));
   }
 
   function navigate(view) {
@@ -1496,7 +1497,7 @@
                 <td><strong>${escapeHtml(user.email || "Sincronización pendiente")}</strong><small>Gestionado desde el portal central</small></td>
                 <td><span class="status-badge ${user.role === "admin" ? "warning" : "info"}">${userAccessLabel(user)}</span></td>
                 <td>${user.last_login_at ? new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date(user.last_login_at)) : "Nunca"}</td>
-                <td><button class="secondary-button compact-button" data-access-user="${user.id}">Cambiar módulos</button></td>
+                <td><div class="user-actions"><button class="secondary-button compact-button" data-access-user="${user.id}">Cambiar módulos</button>${user.id !== currentUser.id ? `<button class="danger-text-button compact-button" data-delete-user="${user.id}">Eliminar de Jornadas</button>` : ""}</div></td>
               </tr>`).join("") : `<tr><td colspan="5"><div class="empty-state"><strong>Aún no hay perfiles sincronizados.</strong></div></td></tr>`}
           </tbody>
         </table>
@@ -1549,6 +1550,20 @@
         showToast(error.message);
       }
     });
+  }
+
+  async function removeUser(userId) {
+    const user = usersCache.find((item) => item.id === userId);
+    if (!user) return;
+    const confirmed = window.confirm(`¿Eliminar a ${user.display_name} de Jornadas?\n\nSi es un usuario normal también se retirará su permiso para esta aplicación. No perderá el acceso a las demás webs.`);
+    if (!confirmed) return;
+    try {
+      const result = await apiRequest(`/api/users/${userId}`, { method: "DELETE" });
+      showToast(result.centralAccessRemoved ? "Perfil eliminado y acceso a Jornadas retirado" : "Perfil eliminado de Jornadas");
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message);
+    }
   }
 
   function microsoftLogin() {
