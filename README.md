@@ -19,6 +19,8 @@ El acceso es cerrado: únicamente un administrador puede crear usuarios y asigna
 - Recuperación automática sin duplicados de las jornadas incluidas en el CSV del 21/07/2026.
 - Facturas PDF asociadas a cada jornada mediante selección manual o arrastre.
 - Apertura de facturas en una pestaña nueva, descarga individual y eliminación.
+- Datos de Jornadas compartidos entre usuarios mediante Cloudflare D1.
+- Facturas privadas compartidas mediante Cloudflare R2.
 - Checklist operativo por jornada.
 - Presupuesto por periodos y partidas.
 - Agenda de contactos con vista privada activada por defecto.
@@ -52,17 +54,22 @@ No existe registro público. El administrador inicial se crea directamente en Cl
 
 La integración Microsoft SSO permanece desactivada hasta configurar las variables de Cloudflare. Consulta `MICROSOFT_ENTRA_SETUP.md`. Al activarla, Microsoft autentica la identidad y D1 conserva la autorización por usuario y módulo. El login local puede mantenerse temporalmente solo para administradores mediante `LOCAL_ADMIN_LOGIN_ENABLED=true`.
 
-Aplica antes la migración:
+Aplica las migraciones antes de desplegar:
 
 ```powershell
 npx wrangler d1 execute portal-jornadas-auth --remote --file migration-entra-sso.sql
+npx wrangler d1 execute portal-jornadas-auth --remote --file migration-shared-jornadas.sql
 ```
+
+La cuenta de Cloudflare debe tener R2 activado y el bucket privado `portal-jornadas-facturas` creado. El binding `INVOICE_FILES` ya está definido en `wrangler.jsonc`.
 
 ## Persistencia
 
-Los datos de Jornadas se guardan en `localStorage`, dentro del navegador y equipo donde se utiliza. Los usuarios, sesiones y datos de Podcast se guardan en Cloudflare D1 para compartirlos entre las cuentas autorizadas.
+Los datos de Jornadas, los usuarios, las sesiones y Podcast se guardan en Cloudflare D1 para compartirlos entre las cuentas autorizadas. El navegador conserva una copia local de respaldo y sus preferencias personales de tema y privacidad.
 
-Los PDF se guardan como archivos binarios en `IndexedDB`, dentro del mismo navegador. No se incluyen en la copia JSON: deben descargarse individualmente desde la jornada. Borrar los datos del sitio o cambiar de navegador elimina este almacenamiento local. Para producción será necesario usar almacenamiento privado de servidor o de objetos.
+Los PDF se guardan de forma privada en Cloudflare R2 y sus metadatos en D1. Solo se sirven desde rutas autenticadas de la aplicación, por lo que abrir o descargar una factura exige una sesión autorizada para Jornadas. No se incluyen en la copia JSON: deben descargarse individualmente desde la jornada.
+
+Tras el primer despliegue, un administrador debe abrir `Datos y copias de seguridad` desde el navegador que tenga la copia local correcta y pulsar una sola vez `Publicar copia local`. La operación también migra las facturas antiguas almacenadas en IndexedDB.
 
 ## Integración futura en el portal
 

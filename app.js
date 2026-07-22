@@ -2,8 +2,8 @@
   "use strict";
 
   const STORAGE_KEY = "portal-jornadas-data-v1";
-  const INVOICE_DB_NAME = "portal-jornadas-files-v1";
-  const INVOICE_STORE_NAME = "invoices";
+  const LEGACY_INVOICE_DB_NAME = "portal-jornadas-files-v1";
+  const LEGACY_INVOICE_STORE_NAME = "invoices";
   const MAX_INVOICE_SIZE = 20 * 1024 * 1024;
   const viewTitles = {
     dashboard: "Resumen anual",
@@ -48,6 +48,10 @@
   let podcastLoading = false;
   let podcastLoaded = false;
   let podcastSection = "dashboard";
+  let sharedStateReady = false;
+  let sharedStateVersion = 0;
+  let sharedStateUpdatedAt = null;
+  let stateSaveChain = Promise.resolve();
 
   const uid = () =>
     globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -119,6 +123,7 @@
   }
 
   let state = normalizeState(loadState());
+  const startupLocalState = clone(state);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (error) {
@@ -146,67 +151,81 @@
     return value;
   }
 
-  function openInvoiceDatabase() {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(INVOICE_DB_NAME, 1);
+  function personalSettings() {
+    return { theme: state.settings.theme || "camara", privacyMode: Boolean(state.settings.privacyMode) };
+  }
+
+  function persistLocalBackup() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function readLegacyInvoiceFiles() {
+    return new Promise((resolve) => {
+      const request = indexedDB.open(LEGACY_INVOICE_DB_NAME, 1);
+      request.onerror = () => resolve([]);
       request.onupgradeneeded = () => {
-        const database = request.result;
-        if (!database.objectStoreNames.contains(INVOICE_STORE_NAME)) {
-          const store = database.createObjectStore(INVOICE_STORE_NAME, { keyPath: "id" });
-          store.createIndex("eventId", "eventId", { unique: false });
+        if (!request.result.objectStoreNames.contains(LEGACY_INVOICE_STORE_NAME)) {
+          request.result.createObjectStore(LEGACY_INVOICE_STORE_NAME, { keyPath: "id" });
         }
       };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const database = request.result;
+        const transaction = database.transaction(LEGACY_INVOICE_STORE_NAME, "readonly");
+        const getAll = transaction.objectStore(LEGACY_INVOICE_STORE_NAME).getAll();
+        getAll.onsuccess = () => resolve(getAll.result || []);
+        getAll.onerror = () => resolve([]);
+        transaction.oncomplete = () => database.close();
+      };
     });
   }
 
-  async function runInvoiceTransaction(mode, action) {
-    const database = await openInvoiceDatabase();
-    return new Promise((resolve, reject) => {
-      const transaction = database.transaction(INVOICE_STORE_NAME, mode);
-      const store = transaction.objectStore(INVOICE_STORE_NAME);
-      action(store, resolve, reject);
-      transaction.onerror = () => reject(transaction.error);
-      transaction.oncomplete = () => database.close();
-    });
+  async function loadSharedState({ silent = false } = {}) {
+    const localSettings = personalSettings();
+    const data = await apiRequest("/api/jornadas/state");
+    sharedStateVersion = Number(data.version || 0);
+    sharedStateUpdatedAt = data.updatedAt || null;
+    sharedStateReady = true;
+    if (data.state) {
+      data.state.settings = { ...(data.state.settings || {}), ...localSettings };
+      state = normalizeState(data.state);
+      persistLocalBackup();
+      applyTheme(state.settings.theme);
+      if (!silent) showToast("Datos compartidos actualizados");
+    }
+    return data;
   }
 
-  function storeInvoiceFile(eventId, metadata, file) {
-    return runInvoiceTransaction("readwrite", (store, resolve, reject) => {
-      const request = store.put({ ...metadata, eventId, blob: file });
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+  async function pushSharedState(path = "/api/jornadas/state", sourceState = state) {
+    const data = await apiRequest(path, {
+      method: "PUT",
+      body: JSON.stringify({ state: sourceState, version: sharedStateVersion }),
     });
+    sharedStateVersion = Number(data.version || sharedStateVersion);
+    sharedStateUpdatedAt = data.updatedAt || sharedStateUpdatedAt;
+    sharedStateReady = true;
+    return data;
   }
 
-  function getInvoiceFile(id) {
-    return runInvoiceTransaction("readonly", (store, resolve, reject) => {
-      const request = store.get(id);
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  function deleteInvoiceFile(id) {
-    return runInvoiceTransaction("readwrite", (store, resolve, reject) => {
-      const request = store.delete(id);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  function clearInvoiceFiles() {
-    return runInvoiceTransaction("readwrite", (store, resolve, reject) => {
-      const request = store.clear();
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  function saveState(message = "Cambios guardados") {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    showToast(message);
+  function saveState(message = "Cambios guardados", shared = true) {
+    persistLocalBackup();
+    if (!shared || !hasModule("jornadas") || !sharedStateReady) {
+      showToast(message);
+      return Promise.resolve();
+    }
+    stateSaveChain = stateSaveChain
+      .catch(() => null)
+      .then(() => pushSharedState())
+      .then(() => showToast(message))
+      .catch(async (error) => {
+        if (error.status === 409) {
+          await loadSharedState({ silent: true });
+          render();
+          showToast("Había cambios de otro usuario; se ha cargado la versión más reciente");
+          return;
+        }
+        showToast(`Guardado local; error al sincronizar: ${error.message}`);
+      });
+    return stateSaveChain;
   }
 
   function showToast(message) {
@@ -364,7 +383,7 @@
         <div>
           <p class="eyebrow">Plan anual de sensibilización</p>
           <h2>Controla jornadas, gastos y tareas en un solo lugar</h2>
-          <p>La información se guarda en este navegador y funciona de forma independiente al Excel original.</p>
+          <p>La información se comparte de forma segura entre los usuarios autorizados y funciona de forma independiente al Excel original.</p>
         </div>
         <div class="hero-budget">
           <span>Presupuesto anual</span>
@@ -770,19 +789,25 @@
         <section class="panel data-card">
           <span class="data-icon">↑</span>
           <h3>Restaurar una copia</h3>
-          <p>Carga un JSON generado por esta aplicación. Sustituirá los datos guardados en este navegador.</p>
+          <p>Carga un JSON generado por esta aplicación. Sustituirá los datos compartidos para todos los usuarios.</p>
           <label class="secondary-button file-button">Seleccionar JSON<input id="importJson" type="file" accept="application/json,.json" /></label>
         </section>
         <section class="panel data-card danger-card">
           <span class="data-icon">↺</span>
           <h3>Restablecer datos iniciales</h3>
-          <p>Elimina los cambios locales y recupera la copia inicial importada del Excel.</p>
+          <p>Recupera la copia inicial importada del Excel para todos los usuarios.</p>
           <button class="danger-button" id="resetData">Restablecer</button>
         </section>
+        ${currentUser?.role === "admin" ? `<section class="panel data-card">
+          <span class="data-icon">⇧</span>
+          <h3>Publicar copia local anterior</h3>
+          <p>Uso único: reemplaza la base compartida con los datos que este navegador tenía antes de activar la sincronización.</p>
+          <button class="secondary-button" id="publishLocalData">Publicar copia local</button>
+        </section>` : ""}
       </div>
       <section class="panel storage-panel">
         <div><p class="eyebrow">Almacenamiento</p><h3>Estado de la aplicación</h3></div>
-        <dl><div><dt>Jornadas</dt><dd>${state.events.length}</dd></div><div><dt>Facturas PDF</dt><dd>${invoiceCount}</dd></div><div><dt>Contactos</dt><dd>${state.contacts.length}</dd></div><div><dt>Datos estructurados</dt><dd>${storedKb} KB</dd></div><div><dt>Ubicación</dt><dd>Navegador local</dd></div></dl>
+        <dl><div><dt>Jornadas</dt><dd>${state.events.length}</dd></div><div><dt>Facturas PDF</dt><dd>${invoiceCount}</dd></div><div><dt>Contactos</dt><dd>${state.contacts.length}</dd></div><div><dt>Datos estructurados</dt><dd>${storedKb} KB</dd></div><div><dt>Ubicación</dt><dd>Cloudflare D1 + R2</dd></div><div><dt>Versión</dt><dd>${sharedStateVersion || "Pendiente"}</dd></div></dl>
       </section>`;
   }
 
@@ -821,13 +846,14 @@
     });
     document.querySelector("#togglePrivacy")?.addEventListener("click", () => {
       state.settings.privacyMode = !state.settings.privacyMode;
-      saveState(state.settings.privacyMode ? "Vista privada activada" : "Datos de contacto visibles");
+      saveState(state.settings.privacyMode ? "Vista privada activada" : "Datos de contacto visibles", false);
       render();
     });
     document.querySelector("#exportJson")?.addEventListener("click", exportJson);
     document.querySelector("#exportCsv")?.addEventListener("click", exportCsv);
     document.querySelector("#importJson")?.addEventListener("change", importJson);
     document.querySelector("#resetData")?.addEventListener("click", resetData);
+    document.querySelector("#publishLocalData")?.addEventListener("click", publishLocalData);
     document.querySelector("[data-new-podcast-episode]")?.addEventListener("click", () => openPodcastEpisodeModal());
     document.querySelector("[data-new-podcast-schedule]")?.addEventListener("click", () => openPodcastScheduleModal());
     appView.querySelectorAll("[data-podcast-tab]").forEach((button) => button.addEventListener("click", () => { podcastSection = button.dataset.podcastTab; render(); }));
@@ -1022,15 +1048,11 @@
     renderEventModal(isExisting);
   }
 
-  async function resolveInvoiceRecord(id) {
-    if (modalPendingFiles.has(id)) {
-      const metadata = modalDraft.invoices.find((invoice) => invoice.id === id);
-      return { ...metadata, blob: modalPendingFiles.get(id) };
-    }
-    return getInvoiceFile(id);
-  }
-
   function viewInvoice(id) {
+    if (!modalPendingFiles.has(id)) {
+      window.open(`/api/jornadas/invoices/${encodeURIComponent(id)}`, "_blank", "noopener");
+      return;
+    }
     const previewWindow = window.open("about:blank", "_blank");
     if (!previewWindow) {
       showToast("El navegador bloqueó la pestaña de visualización");
@@ -1038,10 +1060,10 @@
     }
     previewWindow.opener = null;
     previewWindow.document.write("<title>Cargando factura…</title><p style='font-family:system-ui;padding:24px'>Cargando factura PDF…</p>");
-    resolveInvoiceRecord(id)
-      .then((record) => {
-        if (!record?.blob) throw new Error("Archivo no encontrado");
-        const url = URL.createObjectURL(record.blob);
+    Promise.resolve(modalPendingFiles.get(id))
+      .then((file) => {
+        if (!file) throw new Error("Archivo no encontrado");
+        const url = URL.createObjectURL(file);
         previewWindow.location.replace(url);
         window.setTimeout(() => URL.revokeObjectURL(url), 120000);
       })
@@ -1053,12 +1075,20 @@
 
   async function downloadInvoice(id) {
     try {
-      const record = await resolveInvoiceRecord(id);
-      if (!record?.blob) throw new Error("Archivo no encontrado");
-      const url = URL.createObjectURL(record.blob);
+      if (!modalPendingFiles.has(id)) {
+        const link = document.createElement("a");
+        link.href = `/api/jornadas/invoices/${encodeURIComponent(id)}?download=1`;
+        link.click();
+        showToast("Factura descargada");
+        return;
+      }
+      const file = modalPendingFiles.get(id);
+      const metadata = modalDraft.invoices.find((invoice) => invoice.id === id);
+      if (!file) throw new Error("Archivo no encontrado");
+      const url = URL.createObjectURL(file);
       const link = document.createElement("a");
       link.href = url;
-      link.download = record.name || "factura.pdf";
+      link.download = metadata?.name || "factura.pdf";
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 3000);
       showToast("Factura descargada");
@@ -1068,11 +1098,17 @@
   }
 
   async function persistInvoiceChanges(eventId) {
-    for (const [id, file] of modalPendingFiles) {
-      const metadata = modalDraft.invoices.find((invoice) => invoice.id === id);
-      if (metadata) await storeInvoiceFile(eventId, metadata, file);
+    for (const [temporaryId, file] of modalPendingFiles) {
+      const form = new FormData();
+      form.append("eventId", eventId);
+      form.append("file", file, file.name);
+      const data = await apiRequest("/api/jornadas/invoices", { method: "POST", body: form });
+      const index = modalDraft.invoices.findIndex((invoice) => invoice.id === temporaryId);
+      if (index >= 0) modalDraft.invoices[index] = data.invoice;
     }
-    for (const id of modalRemovedInvoiceIds) await deleteInvoiceFile(id);
+    for (const id of modalRemovedInvoiceIds) {
+      await apiRequest(`/api/jornadas/invoices/${encodeURIComponent(id)}`, { method: "DELETE" });
+    }
     modalPendingFiles = new Map();
     modalRemovedInvoiceIds = new Set();
   }
@@ -1168,7 +1204,7 @@
     document.querySelector("#deleteEvent")?.addEventListener("click", async () => {
       if (!window.confirm("¿Eliminar esta jornada de la aplicación? Esta acción no afecta al Excel original.")) return;
       const invoiceIds = [...(modalDraft.invoices || []).map((invoice) => invoice.id), ...modalRemovedInvoiceIds];
-      await Promise.all(invoiceIds.map((id) => deleteInvoiceFile(id).catch(() => null)));
+      await Promise.all(invoiceIds.map((id) => apiRequest(`/api/jornadas/invoices/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null)));
       state.events = state.events.filter((item) => item.id !== modalDraft.id);
       saveState("Jornada eliminada");
       closeModal();
@@ -1308,11 +1344,10 @@
       try {
         const imported = JSON.parse(reader.result);
         if (!Array.isArray(imported.events) || !Array.isArray(imported.contacts)) throw new Error("Formato inválido");
-        await clearInvoiceFiles();
         imported.events = imported.events.map((item) => ({ ...item, invoices: [] }));
         state = normalizeState(imported);
         applyTheme(state.settings.theme);
-        saveState("Copia restaurada; los PDF no forman parte del JSON");
+        await saveState("Copia restaurada; los PDF no forman parte del JSON");
         render();
       } catch (error) {
         showToast("No se pudo importar el archivo");
@@ -1322,23 +1357,50 @@
   }
 
   async function resetData() {
-    if (!window.confirm("¿Restablecer todos los datos locales? El Excel original no se verá afectado.")) return;
-    await clearInvoiceFiles().catch(() => null);
+    if (!window.confirm("¿Restablecer los datos compartidos para todos los usuarios? El Excel original no se verá afectado.")) return;
+    if (currentUser?.role === "admin") await apiRequest("/api/jornadas/invoices", { method: "DELETE" }).catch(() => null);
     state = clone(window.OAP_SEED);
     state = normalizeState(state);
     applyTheme(state.settings.theme);
-    saveState("Datos iniciales restaurados");
+    await saveState("Datos iniciales restaurados");
     render();
   }
 
+  async function publishLocalData() {
+    if (currentUser?.role !== "admin") return;
+    if (!window.confirm("Esta acción reemplazará los datos compartidos con la copia anterior de este navegador. ¿Continuar?")) return;
+    try {
+      await pushSharedState("/api/jornadas/state/import", startupLocalState);
+      const legacyFiles = await readLegacyInvoiceFiles();
+      for (const record of legacyFiles) {
+        if (!record?.blob || !record.eventId) continue;
+        const form = new FormData();
+        form.append("eventId", record.eventId);
+        form.append("file", record.blob, record.name || "factura.pdf");
+        await apiRequest("/api/jornadas/invoices", { method: "POST", body: form });
+      }
+      await loadSharedState({ silent: true });
+      render();
+      showToast(`Copia local publicada${legacyFiles.length ? ` con ${legacyFiles.length} factura${legacyFiles.length === 1 ? "" : "s"}` : ""}`);
+    } catch (error) {
+      showToast(`No se pudo publicar la copia: ${error.message}`);
+    }
+  }
+
   async function apiRequest(path, options = {}) {
+    const isFormData = options.body instanceof FormData;
     const response = await fetch(path, {
       credentials: "same-origin",
       ...options,
-      headers: options.body ? { "content-type": "application/json", ...(options.headers || {}) } : options.headers,
+      headers: options.body && !isFormData ? { "content-type": "application/json", ...(options.headers || {}) } : options.headers,
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "No se pudo completar la operación");
+    if (!response.ok) {
+      const error = new Error(data.error || "No se pudo completar la operación");
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
     return data;
   }
 
@@ -1605,8 +1667,15 @@
     authContent.innerHTML = '<div class="auth-intro auth-loading"><span class="auth-kicker">Inicio de sesión único</span><h2>Conectando con Microsoft…</h2><p>Estamos comprobando tu sesión corporativa de forma segura.</p><span class="auth-spinner" aria-hidden="true"></span></div>';
   }
 
-  function unlockApp(user) {
+  async function unlockApp(user) {
     currentUser = { ...user, modules: user.role === "admin" ? ["jornadas", "podcast"] : (user.modules || ["jornadas"]) };
+    if (hasModule("jornadas")) {
+      try {
+        await loadSharedState({ silent: true });
+      } catch (error) {
+        showToast(`No se pudieron cargar los datos compartidos: ${error.message}`);
+      }
+    }
     const accessLabel = user.role === "admin" ? "Admin" : currentUser.modules.includes("jornadas") && currentUser.modules.includes("podcast") ? "Jornadas + Podcast" : currentUser.modules.includes("podcast") ? "Podcast" : "Jornadas";
     document.querySelector("#currentUserBadge").textContent = `${user.displayName} · ${accessLabel}`;
     document.querySelectorAll("[data-access]").forEach((item) => { item.hidden = !hasModule(item.dataset.access); });
@@ -1667,7 +1736,7 @@
       button.addEventListener("click", () => {
         state.settings.theme = button.dataset.themeOption;
         applyTheme(state.settings.theme);
-        saveState(`Tema ${themes.find((theme) => theme.id === state.settings.theme).name} activado`);
+        saveState(`Tema ${themes.find((theme) => theme.id === state.settings.theme).name} activado`, false);
         closeModal();
         render();
       });
@@ -1679,7 +1748,7 @@
     authConfiguration = await apiRequest("/api/auth/config").catch(() => ({ microsoftEnabled: true, localAdminLoginEnabled: false, portalLaunchUrl: "https://portal.camaraceuta.workers.dev/api/apps/gestion-jornadas/launch" }));
     try {
       const data = await apiRequest("/api/auth/session");
-      unlockApp(data.user);
+      await unlockApp(data.user);
     } catch (error) {
       const params = new URLSearchParams(window.location.search);
       const authError = params.get("auth_error");

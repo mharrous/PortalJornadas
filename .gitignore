@@ -5,3 +5,4 @@ Thumbs.db
 .idea/
 .env
 .dev.vars
+.wrangler/

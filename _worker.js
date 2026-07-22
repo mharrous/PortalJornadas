@@ -5,6 +5,8 @@ const OIDC_STATE_MINUTES = 10;
 const CURRENT_APP_CODE = "gestion-jornadas";
 const PORTAL_LAUNCH_URL = "https://portal.camaraceuta.workers.dev/api/apps/gestion-jornadas/launch";
 const PORTAL_LOGOUT_URL = "https://portal.camaraceuta.workers.dev/logout";
+const MAX_JORNADAS_STATE_BYTES = 2 * 1024 * 1024;
+const MAX_INVOICE_SIZE = 20 * 1024 * 1024;
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -730,11 +732,188 @@ async function deletePodcastSchedule(request, env, scheduleId) {
   return json({ ok: true });
 }
 
+function sanitizeJornadasState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Datos de jornadas no válidos");
+  const settings = value.settings && typeof value.settings === "object" ? value.settings : {};
+  const clean = {
+    ...value,
+    settings: {
+      annualBudget: Math.max(0, Number(settings.annualBudget || 0)),
+      organization: String(settings.organization || "").slice(0, 200),
+      recovery20260721Applied: Boolean(settings.recovery20260721Applied),
+    },
+    events: Array.isArray(value.events)
+      ? value.events.map((event) => ({ ...event, invoices: undefined })).map((event) => {
+          delete event.invoices;
+          return event;
+        })
+      : [],
+    budgetLines: Array.isArray(value.budgetLines) ? value.budgetLines : [],
+    contacts: Array.isArray(value.contacts) ? value.contacts : [],
+  };
+  const payload = JSON.stringify(clean);
+  if (new TextEncoder().encode(payload).byteLength > MAX_JORNADAS_STATE_BYTES) throw new Error("Los datos superan el tamaño permitido");
+  return { clean, payload };
+}
+
+async function invoiceMetadata(env) {
+  const result = await env.AUTH_DB.prepare(
+    "SELECT id, event_id, name, content_type, size, uploaded_at FROM jornadas_invoices ORDER BY uploaded_at ASC",
+  ).all();
+  return result.results || [];
+}
+
+function mergeInvoiceMetadata(state, rows) {
+  const byEvent = new Map();
+  for (const row of rows) {
+    const invoices = byEvent.get(row.event_id) || [];
+    invoices.push({
+      id: row.id,
+      name: row.name,
+      type: row.content_type,
+      size: Number(row.size || 0),
+      uploadedAt: row.uploaded_at,
+    });
+    byEvent.set(row.event_id, invoices);
+  }
+  state.events = (state.events || []).map((event) => ({ ...event, invoices: byEvent.get(String(event.id)) || [] }));
+  return state;
+}
+
+async function getJornadasState(request, env) {
+  const access = await requireModule(request, env, "jornadas");
+  if (access.error) return access.error;
+  const row = await env.AUTH_DB.prepare("SELECT payload, version, updated_at FROM jornadas_state WHERE id = 1").first();
+  if (!row) return json({ state: null, version: 0, updatedAt: null });
+  let state;
+  try {
+    state = JSON.parse(row.payload);
+  } catch {
+    return json({ error: "Los datos compartidos no son válidos" }, 500);
+  }
+  return json({ state: mergeInvoiceMetadata(state, await invoiceMetadata(env)), version: Number(row.version), updatedAt: row.updated_at });
+}
+
+async function saveJornadasState(request, env, force = false) {
+  const access = await requireModule(request, env, "jornadas");
+  if (access.error) return access.error;
+  if (force && access.session.role !== "admin") return json({ error: "Permisos insuficientes" }, 403);
+  const body = await requestBody(request);
+  let payload;
+  try {
+    ({ payload } = sanitizeJornadasState(body.state));
+  } catch (error) {
+    return json({ error: error.message }, 400);
+  }
+  const expectedVersion = Math.max(0, Number(body.version || 0));
+  const now = new Date().toISOString();
+  let result;
+  if (force) {
+    result = await env.AUTH_DB.prepare(
+      `INSERT INTO jornadas_state (id, payload, version, updated_at, updated_by) VALUES (1, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, version = jornadas_state.version + 1,
+       updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    ).bind(payload, now, access.session.id).run();
+  } else if (expectedVersion === 0) {
+    result = await env.AUTH_DB.prepare(
+      "INSERT OR IGNORE INTO jornadas_state (id, payload, version, updated_at, updated_by) VALUES (1, ?, 1, ?, ?)",
+    ).bind(payload, now, access.session.id).run();
+  } else {
+    result = await env.AUTH_DB.prepare(
+      "UPDATE jornadas_state SET payload = ?, version = version + 1, updated_at = ?, updated_by = ? WHERE id = 1 AND version = ?",
+    ).bind(payload, now, access.session.id, expectedVersion).run();
+  }
+  if (!result.meta.changes) {
+    const current = await env.AUTH_DB.prepare("SELECT version, updated_at FROM jornadas_state WHERE id = 1").first();
+    return json({ error: "Los datos han cambiado en otro equipo", conflict: true, version: Number(current?.version || 0), updatedAt: current?.updated_at || null }, 409);
+  }
+  const saved = await env.AUTH_DB.prepare("SELECT version, updated_at FROM jornadas_state WHERE id = 1").first();
+  return json({ ok: true, version: Number(saved.version), updatedAt: saved.updated_at });
+}
+
+function safeFileName(value) {
+  return String(value || "factura.pdf").replace(/[\r\n"\\]/g, "_").slice(0, 180) || "factura.pdf";
+}
+
+async function uploadJornadasInvoice(request, env) {
+  const access = await requireModule(request, env, "jornadas");
+  if (access.error) return access.error;
+  if (!env.INVOICE_FILES) return json({ error: "El almacén de facturas no está configurado" }, 503);
+  const form = await request.formData();
+  const file = form.get("file");
+  const eventId = String(form.get("eventId") || "").trim();
+  if (!eventId || !(file instanceof File)) return json({ error: "Faltan la jornada o el archivo" }, 400);
+  if (file.size <= 0 || file.size > MAX_INVOICE_SIZE) return json({ error: "El PDF debe ocupar como máximo 20 MB" }, 400);
+  if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) return json({ error: "Solo se admiten facturas en PDF" }, 400);
+  const id = crypto.randomUUID();
+  const objectKey = `events/${encodeURIComponent(eventId)}/${id}.pdf`;
+  const now = new Date().toISOString();
+  const name = safeFileName(file.name);
+  await env.INVOICE_FILES.put(objectKey, file, {
+    httpMetadata: { contentType: "application/pdf" },
+    customMetadata: { eventId, invoiceId: id, originalName: name },
+  });
+  try {
+    await env.AUTH_DB.prepare(
+      "INSERT INTO jornadas_invoices (id, event_id, object_key, name, content_type, size, uploaded_at, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(id, eventId, objectKey, name, "application/pdf", file.size, now, access.session.id).run();
+  } catch (error) {
+    await env.INVOICE_FILES.delete(objectKey);
+    throw error;
+  }
+  return json({ invoice: { id, name, type: "application/pdf", size: file.size, uploadedAt: now } }, 201);
+}
+
+async function serveJornadasInvoice(request, env, invoiceId) {
+  const access = await requireModule(request, env, "jornadas");
+  if (access.error) return access.error;
+  if (!env.INVOICE_FILES) return json({ error: "El almacén de facturas no está configurado" }, 503);
+  const row = await env.AUTH_DB.prepare("SELECT object_key, name, content_type FROM jornadas_invoices WHERE id = ?").bind(invoiceId).first();
+  if (!row) return json({ error: "Factura no encontrada" }, 404);
+  const object = await env.INVOICE_FILES.get(row.object_key);
+  if (!object) return json({ error: "Archivo de factura no encontrado" }, 404);
+  const headers = new Headers({
+    "content-type": row.content_type || "application/pdf",
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+  });
+  object.writeHttpMetadata(headers);
+  const download = new URL(request.url).searchParams.get("download") === "1";
+  const name = safeFileName(row.name);
+  headers.set("content-disposition", `${download ? "attachment" : "inline"}; filename="${name}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+  if (object.httpEtag) headers.set("etag", object.httpEtag);
+  return new Response(object.body, { headers });
+}
+
+async function deleteJornadasInvoice(request, env, invoiceId) {
+  const access = await requireModule(request, env, "jornadas");
+  if (access.error) return access.error;
+  if (!env.INVOICE_FILES) return json({ error: "El almacén de facturas no está configurado" }, 503);
+  const row = await env.AUTH_DB.prepare("SELECT object_key FROM jornadas_invoices WHERE id = ?").bind(invoiceId).first();
+  if (!row) return json({ error: "Factura no encontrada" }, 404);
+  await env.INVOICE_FILES.delete(row.object_key);
+  await env.AUTH_DB.prepare("DELETE FROM jornadas_invoices WHERE id = ?").bind(invoiceId).run();
+  return json({ ok: true });
+}
+
+async function clearJornadasInvoices(request, env) {
+  const access = await requireUser(request, env, "admin");
+  if (access.error) return access.error;
+  if (!env.INVOICE_FILES) return json({ error: "El almacén de facturas no está configurado" }, 503);
+  const rows = await invoiceMetadata(env);
+  if (rows.length) {
+    const keys = await env.AUTH_DB.prepare("SELECT object_key FROM jornadas_invoices").all();
+    await env.INVOICE_FILES.delete((keys.results || []).map((row) => row.object_key));
+  }
+  await env.AUTH_DB.prepare("DELETE FROM jornadas_invoices").run();
+  return json({ ok: true });
+}
+
 async function handleApi(request, env) {
   if (!env.AUTH_DB) return json({ error: "La base de datos de acceso no está configurada" }, 503);
   const url = new URL(request.url);
   if (url.pathname === "/api/auth/portal" && request.method === "GET") return portalLogin(request, env);
-  if (["POST", "PATCH", "DELETE"].includes(request.method) && !assertSameOrigin(request)) return json({ error: "Origen no permitido" }, 403);
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method) && !assertSameOrigin(request)) return json({ error: "Origen no permitido" }, 403);
   if (url.pathname === "/api/auth/config" && request.method === "GET") {
     return json({ microsoftEnabled: true, localAdminLoginEnabled: false, portalLaunchUrl: PORTAL_LAUNCH_URL });
   }
@@ -745,6 +924,14 @@ async function handleApi(request, env) {
     return access.error || json({ user: publicUser(access.session) });
   }
   if (url.pathname === "/api/users" && request.method === "GET") return listUsers(request, env);
+  if (url.pathname === "/api/jornadas/state" && request.method === "GET") return getJornadasState(request, env);
+  if (url.pathname === "/api/jornadas/state" && request.method === "PUT") return saveJornadasState(request, env);
+  if (url.pathname === "/api/jornadas/state/import" && request.method === "PUT") return saveJornadasState(request, env, true);
+  if (url.pathname === "/api/jornadas/invoices" && request.method === "POST") return uploadJornadasInvoice(request, env);
+  if (url.pathname === "/api/jornadas/invoices" && request.method === "DELETE") return clearJornadasInvoices(request, env);
+  const jornadasInvoiceMatch = url.pathname.match(/^\/api\/jornadas\/invoices\/([^/]+)$/);
+  if (jornadasInvoiceMatch && request.method === "GET") return serveJornadasInvoice(request, env, jornadasInvoiceMatch[1]);
+  if (jornadasInvoiceMatch && request.method === "DELETE") return deleteJornadasInvoice(request, env, jornadasInvoiceMatch[1]);
   if (url.pathname === "/api/podcast" && request.method === "GET") return getPodcast(request, env);
   if (url.pathname === "/api/podcast/episodes" && request.method === "POST") return createPodcastEpisode(request, env);
   if (url.pathname === "/api/podcast/schedule" && request.method === "POST") return createPodcastSchedule(request, env);

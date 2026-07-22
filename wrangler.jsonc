@@ -16,6 +16,12 @@
       "database_id": "9f4fbb08-6e87-4ca9-9e5f-49aa012ae3ed"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "INVOICE_FILES",
+      "bucket_name": "portal-jornadas-facturas"
+    }
+  ],
   "observability": {
     "enabled": true
   }
