@@ -221,7 +221,7 @@ async function currentSession(request, env) {
       LEFT JOIN user_application_permissions p
         ON p.user_id = u.id AND p.application_code = ?
       WHERE u.id = ? AND u.active = 1
-        AND (u.role = 'admin' OR p.active = 1)
+        AND p.active = 1
     `).bind(CURRENT_APP_CODE, centralUserId).first();
     if (!allowed) {
       await env.AUTH_DB.prepare("DELETE FROM sessions WHERE id = ?").bind(session.session_id).run();
@@ -387,7 +387,7 @@ async function portalLogin(request, env) {
     SELECT u.id, u.display_name, u.email, u.role, u.entra_oid, u.entra_tenant_id, p.role AS application_role
     FROM users u
     LEFT JOIN user_application_permissions p ON p.user_id = u.id AND p.application_code = ?
-    WHERE u.id = ? AND u.active = 1 AND (u.role = 'admin' OR p.active = 1)
+    WHERE u.id = ? AND u.active = 1 AND p.active = 1
   `).bind(CURRENT_APP_CODE, loginCode.user_id).first();
   if (!centralUser?.email) return json({ error: "Usuario sin correo corporativo autorizado" }, 403);
 
